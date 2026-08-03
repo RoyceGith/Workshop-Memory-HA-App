@@ -1301,6 +1301,35 @@ The project was created from the approved general session:
 
         raise
 
+@mcp.tool()
+def list_import_files() -> dict[str, Any]:
+    """List TXT and Markdown files available in the vault Imports folder."""
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    imports_path = (vault_path / "Imports").resolve()
+
+    if not imports_path.exists():
+        return {
+            "status": "ok",
+            "imports_folder": str(imports_path),
+            "files": [],
+            "message": "Imports folder does not exist.",
+        }
+
+    files = sorted(
+        path.name
+        for path in imports_path.iterdir()
+        if path.is_file()
+        and path.suffix.casefold() in {".txt", ".md"}
+    )
+
+    return {
+        "status": "ok",
+        "imports_folder": str(imports_path),
+        "file_count": len(files),
+        "files": files,
+    }
+
 if __name__ == "__main__":
     import os
 
