@@ -1330,6 +1330,154 @@ def list_import_files() -> dict[str, Any]:
         "files": files,
     }
 
+@mcp.tool()
+def save_project_update_draft(
+    project: str,
+    source: str,
+    update_summary: str,
+    architecture_updates: list[str] | None = None,
+    deployment_updates: list[str] | None = None,
+    security_updates: list[str] | None = None,
+    requirements_updates: list[str] | None = None,
+    decisions_made: list[str] | None = None,
+    tests_completed: list[str] | None = None,
+    current_status: list[str] | None = None,
+    open_questions: list[str] | None = None,
+    next_actions: list[str] | None = None,
+    source_handoff: str | None = None,
+) -> dict[str, Any]:
+    """
+    Save proposed updates for an existing project as an unreviewed session draft.
+
+    This tool does not edit permanent project notes. Use it when new project
+    information must be reviewed before being merged into the project.
+    """
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    inbox_path = (
+        vault_path / settings["sessions_inbox"]
+    ).resolve()
+
+    project_path = resolve_project_folder(project)
+    clean_project_name = project_path.name
+
+    clean_source = clean_single_line(source, "Source")
+    clean_summary = update_summary.strip()
+
+    if not clean_summary:
+        raise ValueError("Update summary cannot be empty.")
+
+    inbox_path.mkdir(parents=True, exist_ok=True)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename_stem = safe_filename_part(
+        f"{today} {clean_project_name} Project Update"
+    )
+
+    output_path = next_available_session_path(
+        inbox_path,
+        filename_stem,
+    )
+
+    def section_items(items: list[str] | None) -> str:
+        cleaned = [
+            item.strip()
+            for item in (items or [])
+            if item and item.strip()
+        ]
+
+        return markdown_bullets(cleaned) if cleaned else "- Not documented"
+
+    source_handoff_text = (
+        f"- `{source_handoff.strip()}`"
+        if source_handoff and source_handoff.strip()
+        else "- None"
+    )
+
+    content = f"""# {clean_project_name} — Project Update Draft
+
+## Session Metadata
+
+- **Session type:** Project Update
+- **Project:** {clean_project_name}
+- **Source:** {clean_source}
+- **Created:** {datetime.now().isoformat(timespec="seconds")}
+- **Review status:** Unreviewed
+- **Applied to project:** No
+
+## Update Summary
+
+{clean_summary}
+
+## Architecture Updates
+
+{section_items(architecture_updates)}
+
+## Deployment Updates
+
+{section_items(deployment_updates)}
+
+## Security Updates
+
+{section_items(security_updates)}
+
+## Requirements Updates
+
+{section_items(requirements_updates)}
+
+## Decisions Made
+
+{section_items(decisions_made)}
+
+## Tests Completed
+
+{section_items(tests_completed)}
+
+## Current Status
+
+{section_items(current_status)}
+
+## Open Questions
+
+{section_items(open_questions)}
+
+## Next Actions
+
+{section_items(next_actions)}
+
+## Source Handoff
+
+{source_handoff_text}
+
+## Review Instructions
+
+Review this draft before applying it to permanent project notes.
+
+Possible actions:
+
+- approve and apply the update
+- edit the draft
+- leave it pending
+- archive it without applying
+"""
+
+    with output_path.open(
+        mode="x",
+        encoding="utf-8",
+        newline="\n",
+    ) as output_file:
+        output_file.write(content)
+
+    return {
+        "status": "saved",
+        "project": clean_project_name,
+        "draft_file": output_path.name,
+        "draft_path": str(output_path),
+        "project_files_changed": False,
+        "review_required": True,
+        "applied_to_project": False,
+    }
+
 if __name__ == "__main__":
     import os
 
