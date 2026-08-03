@@ -1478,6 +1478,205 @@ Possible actions:
         "applied_to_project": False,
     }
 
+def resolve_import_file(import_filename: str) -> Path:
+    """Resolve an exact TXT or Markdown file from the vault Imports folder."""
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    imports_path = (vault_path / "Imports").resolve()
+
+    clean_filename = import_filename.strip()
+
+    if not clean_filename:
+        raise ValueError("Import filename cannot be empty.")
+
+    if Path(clean_filename).name != clean_filename:
+        raise ValueError("Use only the import filename, not a path.")
+
+    if Path(clean_filename).suffix.casefold() not in {".txt", ".md"}:
+        raise ValueError("Import file must be TXT or Markdown.")
+
+    import_path = (imports_path / clean_filename).resolve()
+
+    if import_path.parent != imports_path:
+        raise ValueError("Invalid import filename.")
+
+    if not import_path.is_file():
+        raise FileNotFoundError(
+            f"Import file was not found: {clean_filename}"
+        )
+
+    return import_path
+
+
+def extract_numbered_handoff_section(
+    content: str,
+    section_number: int,
+) -> str:
+    """Extract one numbered handoff section."""
+    pattern = re.compile(
+        rf"""
+        ^\s*{section_number}\.\s+[^\n]+\n
+        =+\n
+        (?P<body>.*?)
+        (?=
+            ^\s*{section_number + 1}\.\s+[^\n]+\n
+            =+\n
+            |
+            \Z
+        )
+        """,
+        re.MULTILINE | re.DOTALL | re.VERBOSE,
+    )
+
+    match = pattern.search(content)
+
+    if not match:
+        return "Not documented"
+
+    body = match.group("body").strip()
+    return body or "Not documented"
+
+
+@mcp.tool()
+def save_project_update_draft_from_handoff(
+    project: str,
+    import_filename: str,
+    source: str = "Imported migration handoff",
+) -> dict[str, Any]:
+    """
+    Read a handoff from Imports and create a detailed project-update draft.
+
+    This does not modify permanent project notes. The source handoff is
+    preserved in the draft and organized into review sections.
+    """
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    inbox_path = (
+        vault_path / settings["sessions_inbox"]
+    ).resolve()
+
+    project_path = resolve_project_folder(project)
+    clean_project_name = project_path.name
+    import_path = resolve_import_file(import_filename)
+
+    handoff_content = import_path.read_text(encoding="utf-8")
+
+    architecture = extract_numbered_handoff_section(
+        handoff_content,
+        1,
+    )
+    ha_configuration = extract_numbered_handoff_section(
+        handoff_content,
+        3,
+    )
+    networking = extract_numbered_handoff_section(
+        handoff_content,
+        4,
+    )
+    syncthing = extract_numbered_handoff_section(
+        handoff_content,
+        5,
+    )
+    tailscale = extract_numbered_handoff_section(
+        handoff_content,
+        6,
+    )
+    cloudflare = extract_numbered_handoff_section(
+        handoff_content,
+        7,
+    )
+    functional_status = extract_numbered_handoff_section(
+        handoff_content,
+        8,
+    )
+    git_workflow = extract_numbered_handoff_section(
+        handoff_content,
+        9,
+    )
+    update_procedure = extract_numbered_handoff_section(
+        handoff_content,
+        10,
+    )
+    recommended_updates = extract_numbered_handoff_section(
+        handoff_content,
+        11,
+    )
+
+    inbox_path.mkdir(parents=True, exist_ok=True)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename_stem = safe_filename_part(
+        f"{today} {clean_project_name} Detailed Project Update"
+    )
+    output_path = next_available_session_path(
+        inbox_path,
+        filename_stem,
+    )
+
+    content = f"""# {clean_project_name} — Detailed Project Update Draft
+
+## Session Metadata
+
+- **Session type:** Project Update
+- **Project:** {clean_project_name}
+- **Source:** {clean_single_line(source, "Source")}
+- **Source handoff:** `{import_path.name}`
+- **Created:** {datetime.now().isoformat(timespec="seconds")}
+- **Review status:** Unreviewed
+- **Applied to project:** No
+
+## Update Summary
+
+The Workshop Memory MCP service was migrated from the Windows host to a
+Raspberry Pi running Home Assistant OS. The Obsidian vault is synchronized
+between the Pi and Windows PCs through Syncthing. Deployment source is stored
+in GitHub, and the existing Cloudflare MCP endpoint now routes to the Pi.
+
+## Architecture Updates
+
+{architecture}
+
+## Home Assistant App Configuration
+
+{ha_configuration}
+
+## MCP Server Networking Changes
+
+{networking}
+
+## Syncthing and Vault Synchronization
+
+{syncthing}
+
+## Tailscale Connectivity
+
+{tailscale}
+
+## Cloudflare Tunnel Changes
+
+{cloudflare}
+
+## Current Functional Status
+
+{functional_status}
+
+## Git and Source-Control Procedure
+
+{git_workflow}
+
+## Home Assistant Update Procedure
+
+{update_procedure}
+
+## Recommended Documentation Updates and Open Tasks
+
+{recommended_updates}
+
+## Full Source Handoff
+
+```text
+{handoff_content}
+
 if __name__ == "__main__":
     import os
 
