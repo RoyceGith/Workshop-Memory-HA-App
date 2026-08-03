@@ -1613,69 +1613,112 @@ def save_project_update_draft_from_handoff(
         filename_stem,
     )
 
-    content = f"""# {clean_project_name} — Detailed Project Update Draft
+        content = "\n".join(
+        [
+            f"# {clean_project_name} — Detailed Project Update Draft",
+            "",
+            "## Session Metadata",
+            "",
+            "- **Session type:** Project Update",
+            f"- **Project:** {clean_project_name}",
+            f'- **Source:** {clean_single_line(source, "Source")}',
+            f"- **Source handoff:** `{import_path.name}`",
+            f"- **Created:** {datetime.now().isoformat(timespec='seconds')}",
+            "- **Review status:** Unreviewed",
+            "- **Applied to project:** No",
+            "",
+            "## Update Summary",
+            "",
+            "The Workshop Memory MCP service was migrated from the Windows "
+            "host to a Raspberry Pi running Home Assistant OS. The Obsidian "
+            "vault is synchronized between the Pi and Windows PCs through "
+            "Syncthing. Deployment source is stored in GitHub, and the "
+            "existing Cloudflare MCP endpoint now routes to the Pi.",
+            "",
+            "## Architecture Updates",
+            "",
+            architecture,
+            "",
+            "## Home Assistant App Configuration",
+            "",
+            ha_configuration,
+            "",
+            "## MCP Server Networking Changes",
+            "",
+            networking,
+            "",
+            "## Syncthing and Vault Synchronization",
+            "",
+            syncthing,
+            "",
+            "## Tailscale Connectivity",
+            "",
+            tailscale,
+            "",
+            "## Cloudflare Tunnel Changes",
+            "",
+            cloudflare,
+            "",
+            "## Current Functional Status",
+            "",
+            functional_status,
+            "",
+            "## Git and Source-Control Procedure",
+            "",
+            git_workflow,
+            "",
+            "## Home Assistant Update Procedure",
+            "",
+            update_procedure,
+            "",
+            "## Recommended Documentation Updates and Open Tasks",
+            "",
+            recommended_updates,
+            "",
+            "## Full Source Handoff",
+            "",
+            "```text",
+            handoff_content,
+            "```",
+            "",
+            "## Review Instructions",
+            "",
+            "Review this draft before applying it to permanent project notes.",
+            "",
+            "Suggested target notes:",
+            "",
+            "- `Project Overview.md`",
+            "- `Architecture.md`",
+            "- `Deployment.md`",
+            "- `Security.md`",
+            "- `Requirements.md`",
+            "- `Session Handoff.md`",
+            "- `Test Log.md`",
+            "- `Design Decisions.md`",
+            "",
+            "No permanent project files have been changed.",
+            "",
+        ]
+    )
 
-## Session Metadata
+    with output_path.open(
+        mode="x",
+        encoding="utf-8",
+        newline="\n",
+    ) as output_file:
+        output_file.write(content)
 
-- **Session type:** Project Update
-- **Project:** {clean_project_name}
-- **Source:** {clean_single_line(source, "Source")}
-- **Source handoff:** `{import_path.name}`
-- **Created:** {datetime.now().isoformat(timespec="seconds")}
-- **Review status:** Unreviewed
-- **Applied to project:** No
+    return {
+        "status": "saved",
+        "project": clean_project_name,
+        "source_handoff": import_path.name,
+        "draft_file": output_path.name,
+        "draft_path": str(output_path),
+        "project_files_changed": False,
+        "review_required": True,
+        "applied_to_project": False,
+    }
 
-## Update Summary
-
-The Workshop Memory MCP service was migrated from the Windows host to a
-Raspberry Pi running Home Assistant OS. The Obsidian vault is synchronized
-between the Pi and Windows PCs through Syncthing. Deployment source is stored
-in GitHub, and the existing Cloudflare MCP endpoint now routes to the Pi.
-
-## Architecture Updates
-
-{architecture}
-
-## Home Assistant App Configuration
-
-{ha_configuration}
-
-## MCP Server Networking Changes
-
-{networking}
-
-## Syncthing and Vault Synchronization
-
-{syncthing}
-
-## Tailscale Connectivity
-
-{tailscale}
-
-## Cloudflare Tunnel Changes
-
-{cloudflare}
-
-## Current Functional Status
-
-{functional_status}
-
-## Git and Source-Control Procedure
-
-{git_workflow}
-
-## Home Assistant Update Procedure
-
-{update_procedure}
-
-## Recommended Documentation Updates and Open Tasks
-
-{recommended_updates}
-
-## Full Source Handoff
-
-```text
-{handoff_content}
 
 if __name__ == "__main__":
     import os
