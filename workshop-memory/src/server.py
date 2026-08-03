@@ -1719,6 +1719,412 @@ def save_project_update_draft_from_handoff(
         "applied_to_project": False,
     }
 
+def meaningful_update_section(content: str, heading: str) -> str | None:
+    """Return a useful H2 section, excluding empty placeholder content."""
+    value = extract_handoff_section(content, heading).strip()
+
+    if not value:
+        return None
+
+    normalized = value.casefold().strip(" \n\r\t-")
+
+    placeholders = {
+        "not documented",
+        "none",
+        "n/a",
+        "no updates",
+    }
+
+    if normalized in placeholders:
+        return None
+
+    return value
+
+
+def combine_update_sections(
+    draft_content: str,
+    headings: list[str],
+) -> str | None:
+    """Combine useful draft sections while preserving their headings."""
+    collected: list[str] = []
+
+    for heading in headings:
+        value = meaningful_update_section(
+            draft_content,
+            heading,
+        )
+
+        if value:
+            collected.append(
+                f"### {heading}\n\n{value}"
+            )
+
+    if not collected:
+        return None
+
+    return "\n\n".join(collected)
+
+
+@mcp.tool()
+def apply_project_update_draft(
+    project: str,
+    draft_filename: str,
+    user_confirmed: bool,
+    archive_after_apply: bool = False,
+) -> dict[str, Any]:
+    """
+    Apply an approved project-update draft to an existing project.
+
+    This tool appends dated update sections to project notes. It never replaces
+    existing note content. It requires explicit user confirmation and prevents
+    the same draft from being applied more than once.
+    """
+    if not user_confirmed:
+        raise PermissionError(
+            "Explicit user confirmation is required before applying "
+            "a project update draft."
+        )
+
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+
+    project_path = resolve_project_folder(project)
+    clean_project_name = project_path.name
+
+    draft_path = resolve_session_file(draft_filename)
+    draft_content = draft_path.read_text(encoding="utf-8")
+
+    metadata = extract_handoff_section(
+        draft_content,
+        "Session Metadata",
+    )
+
+    if "**Session type:** Project Update" not in metadata:
+        raise ValueError(
+            "The selected session is not marked as a Project Update."
+        )
+
+    expected_project_line = (
+        f"**Project:** {clean_project_name}"
+    )
+
+    if expected_project_line not in metadata:
+        raise ValueError(
+            "The project named in the draft does not match the "
+            "selected target project."
+        )
+
+    if "**Applied to project:** Yes" in metadata:
+        raise FileExistsError(
+            "This project update draft has already been applied."
+        )
+
+    source_marker = (
+        f"<!-- workshop-update:{draft_path.name} -->"
+    )
+
+    update_date = datetime.now().strftime("%Y-%m-%d")
+    applied_timestamp = datetime.now().isoformat(
+        timespec="seconds"
+    )
+
+    overview_update = combine_update_sections(
+        draft_content,
+        [
+            "Update Summary",
+            "Current Status",
+            "Current Functional Status",
+        ],
+    )
+
+    architecture_update = combine_update_sections(
+        draft_content,
+        [
+            "Architecture Updates",
+            "MCP Server Networking Changes",
+            "Syncthing and Vault Synchronization",
+            "Tailscale Connectivity",
+            "Cloudflare Tunnel Changes",
+        ],
+    )
+
+    deployment_update = combine_update_sections(
+        draft_content,
+        [
+            "Deployment Updates",
+            "Home Assistant App Configuration",
+            "Git and Source-Control Procedure",
+            "Home Assistant Update Procedure",
+        ],
+    )
+
+    security_update = combine_update_sections(
+        draft_content,
+        [
+            "Security Updates",
+            "Tailscale Connectivity",
+            "Cloudflare Tunnel Changes",
+        ],
+    )
+
+    requirements_update = combine_update_sections(
+        draft_content,
+        [
+            "Requirements Updates",
+        ],
+    )
+
+    decisions_update = combine_update_sections(
+        draft_content,
+        [
+            "Decisions Made",
+        ],
+    )
+
+    test_update = combine_update_sections(
+        draft_content,
+        [
+            "Tests Completed",
+            "Current Functional Status",
+        ],
+    )
+
+    handoff_update = combine_update_sections(
+        draft_content,
+        [
+            "Update Summary",
+            "Current Status",
+            "Current Functional Status",
+            "Open Questions",
+            "Next Actions",
+            "Recommended Documentation Updates and Open Tasks",
+        ],
+    )
+
+    update_plan: dict[str, str] = {}
+
+    def add_planned_update(
+        filename: str,
+        section_title: str,
+        body: str | None,
+    ) -> None:
+        if not body:
+            return
+
+        update_plan[filename] = (
+            f"\n\n{source_marker}\n"
+            f"## Project Update — {update_date}\n\n"
+            f"**Source draft:** `{draft_path.name}`  \n"
+            f"**Applied:** {applied_timestamp}\n\n"
+            f"### {section_title}\n\n"
+            f"{body}\n"
+        )
+
+    add_planned_update(
+        "Project Overview.md",
+        "Project Status Update",
+        overview_update,
+    )
+
+    add_planned_update(
+        "Architecture.md",
+        "Architecture Update",
+        architecture_update,
+    )
+
+    add_planned_update(
+        "Deployment.md",
+        "Deployment Update",
+        deployment_update,
+    )
+
+    add_planned_update(
+        "Security.md",
+        "Security Update",
+        security_update,
+    )
+
+    add_planned_update(
+        "Requirements.md",
+        "Requirements Update",
+        requirements_update,
+    )
+
+    add_planned_update(
+        "Design Decisions.md",
+        "Decisions Added",
+        decisions_update,
+    )
+
+    add_planned_update(
+        "Test Log.md",
+        "Test and Verification Update",
+        test_update,
+    )
+
+    add_planned_update(
+        "Session Handoff.md",
+        "Current Handoff Update",
+        handoff_update,
+    )
+
+    if not update_plan:
+        raise ValueError(
+            "The draft contains no applicable project-update sections."
+        )
+
+    target_paths: dict[str, Path] = {
+        filename: project_path / filename
+        for filename in update_plan
+    }
+
+    # Preflight duplicate check before changing any files.
+    for filename, target_path in target_paths.items():
+        if not target_path.exists():
+            continue
+
+        existing_content = target_path.read_text(
+            encoding="utf-8"
+        )
+
+        if source_marker in existing_content:
+            raise FileExistsError(
+                f"The draft has already been applied to {filename}."
+            )
+
+    original_files: dict[Path, str | None] = {}
+
+    for target_path in target_paths.values():
+        original_files[target_path] = (
+            target_path.read_text(encoding="utf-8")
+            if target_path.exists()
+            else None
+        )
+
+    original_draft_content = draft_content
+    archived_path: Path | None = None
+
+    try:
+        changed_files: list[str] = []
+        created_files: list[str] = []
+
+        for filename, appended_content in update_plan.items():
+            target_path = target_paths[filename]
+
+            if target_path.exists():
+                existing_content = target_path.read_text(
+                    encoding="utf-8"
+                )
+
+                new_content = (
+                    existing_content.rstrip()
+                    + appended_content
+                    + "\n"
+                )
+            else:
+                note_title = Path(filename).stem
+
+                new_content = (
+                    f"# {clean_project_name} — {note_title}\n"
+                    f"{appended_content}\n"
+                )
+
+                created_files.append(filename)
+
+            target_path.write_text(
+                new_content,
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            changed_files.append(filename)
+
+        updated_draft = draft_content.replace(
+            "- **Review status:** Unreviewed",
+            "- **Review status:** Approved",
+            1,
+        )
+
+        updated_draft = updated_draft.replace(
+            "- **Applied to project:** No",
+            "- **Applied to project:** Yes",
+            1,
+        )
+
+        updated_draft += (
+            "\n\n## Application Record\n\n"
+            f"- **Applied:** {applied_timestamp}\n"
+            f"- **Project:** {clean_project_name}\n"
+            "- **Method:** Append-only project update\n"
+            f"- **Files changed:** {len(changed_files)}\n"
+        )
+
+        draft_path.write_text(
+            updated_draft,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        if archive_after_apply:
+            archive_folder = (
+                vault_path / settings["sessions_archive"]
+            ).resolve()
+
+            archive_folder.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            archived_path = next_available_session_path(
+                archive_folder,
+                draft_path.stem,
+            )
+
+            draft_path.replace(archived_path)
+
+        return {
+            "status": "applied",
+            "project": clean_project_name,
+            "source_draft": draft_path.name,
+            "changed_files": changed_files,
+            "created_files": created_files,
+            "files_overwritten": False,
+            "update_method": "append-only",
+            "duplicate_protection": True,
+            "draft_marked_applied": True,
+            "draft_archived": archive_after_apply,
+            "archive_path": (
+                str(archived_path)
+                if archived_path
+                else None
+            ),
+        }
+
+    except Exception:
+        # Restore every project note to its exact original state.
+        for target_path, original_content in original_files.items():
+            if original_content is None:
+                if target_path.exists():
+                    target_path.unlink()
+            else:
+                target_path.write_text(
+                    original_content,
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+        # Restore the draft if it was changed or moved.
+        if archived_path and archived_path.exists():
+            archived_path.replace(draft_path)
+
+        draft_path.write_text(
+            original_draft_content,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        raise
+
 
 if __name__ == "__main__":
     import os
