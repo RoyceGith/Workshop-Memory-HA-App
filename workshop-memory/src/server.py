@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+import os
+import httpx
 import json
 from uuid import uuid4
 from pathlib import Path
@@ -2335,6 +2336,111 @@ def approve_server_update(
         "server_files_changed": False,
         "git_changes_made": False,
         "ready_for_deployment": True,
+    }
+
+@mcp.tool()
+def apply_server_change(
+    target_file: str,
+    find_text: str,
+    replacement_text: str,
+    reason: str,
+) -> dict[str, Any]:
+    """
+    Apply one exact server repository change through the trusted deployment
+    agent. The agent validates the change, increments the Home Assistant app
+    version, commits it, and pushes it to GitHub.
+    """
+    agent_url = os.getenv(
+        "WORKSHOP_DEPLOY_AGENT_URL",
+        "",
+    ).strip().rstrip("/")
+
+    agent_token = os.getenv(
+        "WORKSHOP_DEPLOY_AGENT_TOKEN",
+        "",
+    ).strip()
+
+    if not agent_url:
+        raise RuntimeError(
+            "Deployment-agent URL is not configured."
+        )
+
+    if not agent_token:
+        raise RuntimeError(
+            "Deployment-agent token is not configured."
+        )
+
+    clean_target = target_file.strip().replace("\\", "/")
+    clean_reason = reason.strip()
+
+    if not find_text:
+        raise ValueError("find_text cannot be empty.")
+
+    if find_text == replacement_text:
+        raise ValueError(
+            "replacement_text must differ from find_text."
+        )
+
+    if not clean_reason:
+        raise ValueError(
+            "A reason for the server change is required."
+        )
+
+    payload = {
+        "target_file": clean_target,
+        "find_text": find_text,
+        "replacement_text": replacement_text,
+        "reason": clean_reason,
+    }
+
+    try:
+        response = httpx.post(
+            f"{agent_url}/apply-change",
+            headers={
+                "X-Workshop-Token": agent_token,
+            },
+            json=payload,
+            timeout=60.0,
+        )
+    except httpx.RequestError as error:
+        raise RuntimeError(
+            f"Could not reach the deployment agent: {error}"
+        ) from error
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        response_data = {
+            "detail": response.text,
+        }
+
+    if response.status_code >= 400:
+        detail = response_data.get(
+            "detail",
+            response.text,
+        )
+
+        raise RuntimeError(
+            f"Deployment agent rejected the change: {detail}"
+        )
+
+    return {
+        "status": response_data.get("status"),
+        "target_file": response_data.get("target_file"),
+        "previous_version": response_data.get(
+            "previous_version"
+        ),
+        "new_version": response_data.get("new_version"),
+        "commit": response_data.get("commit"),
+        "commit_message": response_data.get(
+            "commit_message"
+        ),
+        "pushed": response_data.get("pushed"),
+        "home_assistant_update_required": (
+            response_data.get(
+                "home_assistant_update_required"
+            )
+        ),
     }
 
 if __name__ == "__main__":
