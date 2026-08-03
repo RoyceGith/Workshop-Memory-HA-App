@@ -1309,7 +1309,7 @@ if __name__ == "__main__":
     if transport == "http":
         mcp.run(
             transport="streamable-http",
-            host="127.0.0.1",
+            host=os.getenv("WORKSHOP_MCP_HOST", "127.0.0.1"),
             port=3001,
             stateless_http=True,
             json_response=True,
