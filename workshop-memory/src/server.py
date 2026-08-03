@@ -1613,7 +1613,7 @@ def save_project_update_draft_from_handoff(
         filename_stem,
     )
 
-        content = "\n".join(
+    content = "\n".join(
         [
             f"# {clean_project_name} — Detailed Project Update Draft",
             "",
