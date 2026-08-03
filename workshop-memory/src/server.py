@@ -2235,6 +2235,108 @@ def stage_server_update(
     }
 
 
+@mcp.tool()
+def approve_server_update(
+    update_id: str,
+    user_confirmed: bool,
+) -> dict[str, Any]:
+    """
+    Approve one staged server-update request.
+
+    This does not modify source code, increment versions, commit, or push.
+    It only marks the exact staged JSON request as approved for the separate
+    deployment script.
+    """
+    if not user_confirmed:
+        raise PermissionError(
+            "Explicit user confirmation is required."
+        )
+
+    clean_update_id = clean_single_line(
+        update_id,
+        "Update ID",
+    )
+
+    if not re.fullmatch(
+        r"\d{8}-\d{6}-[0-9a-f]{8}",
+        clean_update_id,
+    ):
+        raise ValueError("Invalid update ID format.")
+
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+
+    inbox_path = (
+        vault_path
+        / "Server Updates"
+        / "Inbox"
+    ).resolve()
+
+    patch_path = (
+        inbox_path / f"{clean_update_id}.json"
+    ).resolve()
+
+    if patch_path.parent != inbox_path:
+        raise ValueError("Invalid update path.")
+
+    if not patch_path.is_file():
+        raise FileNotFoundError(
+            f"Staged server update not found: {clean_update_id}"
+        )
+
+    payload = json.loads(
+        patch_path.read_text(encoding="utf-8")
+    )
+
+    if payload.get("update_id") != clean_update_id:
+        raise ValueError(
+            "Update ID does not match the staged file."
+        )
+
+    current_status = payload.get("status")
+
+    if current_status == "approved":
+        return {
+            "status": "already_approved",
+            "update_id": clean_update_id,
+            "patch_file": patch_path.name,
+            "server_files_changed": False,
+            "git_changes_made": False,
+        }
+
+    if current_status != "staged":
+        raise ValueError(
+            f"Only staged updates can be approved. "
+            f"Current status: {current_status}"
+        )
+
+    payload["status"] = "approved"
+    payload["user_approved"] = True
+    payload["approved_at"] = datetime.now().isoformat(
+        timespec="seconds"
+    )
+
+    patch_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    return {
+        "status": "approved",
+        "update_id": clean_update_id,
+        "patch_file": patch_path.name,
+        "target_file": payload.get("target_file"),
+        "server_files_changed": False,
+        "git_changes_made": False,
+        "ready_for_deployment": True,
+    }
+
 if __name__ == "__main__":
     import os
 
