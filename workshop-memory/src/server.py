@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 from pathlib import Path
 import re
 from datetime import datetime
@@ -2124,6 +2125,114 @@ def apply_project_update_draft(
         )
 
         raise
+
+import json
+from uuid import uuid4
+
+
+@mcp.tool()
+def stage_server_update(
+    target_file: str,
+    find_text: str,
+    replacement_text: str,
+    reason: str,
+) -> dict[str, Any]:
+    """
+    Stage an exact source-code replacement for review and deployment.
+
+    This tool does not modify the running server or Git repository. It writes
+    a deterministic patch request into the synchronized vault.
+    """
+    allowed_targets = {
+        "workshop-memory/src/server.py",
+        "workshop-memory/config.yaml",
+        "workshop-memory/run.sh",
+        "workshop-memory/Dockerfile",
+        "workshop-memory/requirements.txt",
+    }
+
+    clean_target = target_file.strip().replace("\\", "/")
+
+    if clean_target not in allowed_targets:
+        raise ValueError(
+            "Target file is not permitted. Allowed targets: "
+            + ", ".join(sorted(allowed_targets))
+        )
+
+    if not find_text:
+        raise ValueError("find_text cannot be empty.")
+
+    if find_text == replacement_text:
+        raise ValueError(
+            "replacement_text must differ from find_text."
+        )
+
+    clean_reason = reason.strip()
+
+    if not clean_reason:
+        raise ValueError("A reason for the update is required.")
+
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+
+    inbox_path = (
+        vault_path
+        / "Server Updates"
+        / "Inbox"
+    ).resolve()
+
+    inbox_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    update_id = f"{timestamp}-{uuid4().hex[:8]}"
+
+    output_path = inbox_path / f"{update_id}.json"
+
+    payload = {
+        "schema_version": 1,
+        "update_id": update_id,
+        "created": datetime.now().isoformat(
+            timespec="seconds"
+        ),
+        "status": "staged",
+        "user_approved": False,
+        "target_file": clean_target,
+        "find_text": find_text,
+        "replacement_text": replacement_text,
+        "reason": clean_reason,
+        "deployment": {
+            "validate_python": (
+                clean_target
+                == "workshop-memory/src/server.py"
+            ),
+            "increment_patch_version": True,
+            "commit_and_push": True,
+        },
+    }
+
+    with output_path.open(
+        mode="x",
+        encoding="utf-8",
+        newline="\n",
+    ) as output_file:
+        json.dump(
+            payload,
+            output_file,
+            indent=2,
+            ensure_ascii=False,
+        )
+        output_file.write("\n")
+
+    return {
+        "status": "staged",
+        "update_id": update_id,
+        "patch_file": output_path.name,
+        "patch_path": str(output_path),
+        "target_file": clean_target,
+        "server_files_changed": False,
+        "git_changes_made": False,
+        "review_required": True,
+    }
 
 
 if __name__ == "__main__":
