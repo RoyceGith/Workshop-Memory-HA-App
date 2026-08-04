@@ -8,14 +8,23 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from mcp.server import MCPServer
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    from mcp.server import FastMCP
 
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 
-mcp = MCPServer("Workshop Memory MCP")
+mcp = FastMCP(
+    "Workshop Memory MCP",
+    host=os.getenv("WORKSHOP_MCP_HOST", "127.0.0.1"),
+    port=3001,
+    stateless_http=True,
+    json_response=True,
+)
 
 
 def load_settings() -> dict[str, Any]:
@@ -69,7 +78,17 @@ def load_settings() -> dict[str, Any]:
 @mcp.tool()
 def check_server_status() -> dict[str, Any]:
     """Check whether the server can load its settings and access the vault."""
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        return {
+            "server": "Workshop Memory MCP",
+            "status": "unhealthy",
+            "settings_file": str(SETTINGS_PATH),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+
     vault_path = Path(settings["vault_path"])
 
     checked_paths: dict[str, dict[str, Any]] = {}
@@ -122,6 +141,16 @@ def list_projects() -> dict[str, Any]:
     settings = load_settings()
     vault_path = Path(settings["vault_path"])
     projects_path = vault_path / settings["projects_folder"]
+
+    if not projects_path.exists():
+        raise FileNotFoundError(
+            f"Projects folder was not found: {projects_path}"
+        )
+
+    if not projects_path.is_dir():
+        raise NotADirectoryError(
+            f"Projects path is not a directory: {projects_path}"
+        )
 
     projects = sorted(
         item.name
@@ -2449,12 +2478,6 @@ if __name__ == "__main__":
     transport = os.getenv("WORKSHOP_MCP_TRANSPORT", "stdio")
 
     if transport == "http":
-        mcp.run(
-            transport="streamable-http",
-            host=os.getenv("WORKSHOP_MCP_HOST", "127.0.0.1"),
-            port=3001,
-            stateless_http=True,
-            json_response=True,
-        )
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()
