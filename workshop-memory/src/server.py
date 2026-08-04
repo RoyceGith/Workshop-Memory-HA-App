@@ -2789,6 +2789,56 @@ def approve_server_update(
     }
 
 @mcp.tool()
+def check_deploy_agent_status():
+    """Return deployment-agent health without modifying or deploying anything."""
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+
+    agent_url = os.environ.get("DEPLOY_AGENT_URL", "").rstrip("/")
+    token = os.environ.get("DEPLOY_AGENT_TOKEN", "")
+    result = {
+        "reachable": False,
+        "agent_url": agent_url,
+        "http_status": None,
+        "response_json": None,
+        "error": None,
+    }
+    if not agent_url:
+        result["error"] = {"type": "configuration_error", "message": "DEPLOY_AGENT_URL is not configured"}
+        return result
+
+    request = urllib.request.Request(
+        agent_url + "/health",
+        method="GET",
+        headers={"Accept": "application/json", "Authorization": "Bearer " + token},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            result["http_status"] = response.status
+            body = response.read().decode("utf-8", errors="replace")
+            if body:
+                try:
+                    result["response_json"] = json.loads(body)
+                except json.JSONDecodeError:
+                    pass
+            result["reachable"] = 200 <= response.status < 400
+    except urllib.error.HTTPError as exc:
+        result["http_status"] = exc.code
+        body = exc.read().decode("utf-8", errors="replace")
+        if body:
+            try:
+                result["response_json"] = json.loads(body)
+            except json.JSONDecodeError:
+                pass
+        result["error"] = {"type": type(exc).__name__, "message": str(exc)}
+    except Exception as exc:
+        result["error"] = {"type": type(exc).__name__, "message": str(exc)}
+    return result
+
+
+@mcp.tool()
 def apply_server_change(
     target_file: str,
     find_text: str,
