@@ -2893,6 +2893,84 @@ def apply_server_change(
         ),
     }
 
+@mcp.tool()
+def check_deploy_agent_status() -> dict[str, Any]:
+    """Check the configured deploy agent health endpoint without mutating state."""
+    import json
+    from pathlib import Path
+    from urllib import error as urllib_error
+    from urllib import request as urllib_request
+
+    timeout_seconds = 3.0
+
+    try:
+        settings_path = Path("/app/config/settings.json")
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        deploy_agent = settings.get("deploy_agent", {})
+        base_url = (
+            deploy_agent.get("url")
+            or deploy_agent.get("base_url")
+            or settings.get("deploy_agent_url")
+        )
+        if not base_url:
+            return {
+                "reachable": False,
+                "status_code": None,
+                "response_json": None,
+                "error": {
+                    "type": "ConfigurationError",
+                    "message": "Deploy agent URL is not configured.",
+                },
+            }
+
+        health_url = f"{str(base_url).rstrip('/')}/health"
+        request = urllib_request.Request(
+            health_url,
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            status_code = response.getcode()
+            body = response.read().decode("utf-8", errors="replace")
+            try:
+                response_json = json.loads(body) if body else None
+            except json.JSONDecodeError:
+                response_json = None
+
+            return {
+                "reachable": True,
+                "status_code": status_code,
+                "response_json": response_json,
+                "error": None,
+            }
+
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            response_json = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            response_json = None
+
+        return {
+            "reachable": True,
+            "status_code": exc.code,
+            "response_json": response_json,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "reachable": False,
+            "status_code": None,
+            "response_json": None,
+            "error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+
+
 if __name__ == "__main__":
     import os
 
