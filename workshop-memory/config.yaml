@@ -1,5 +1,5 @@
 name: Workshop Memory MCP
-version: "0.1.16"
+version: "0.1.17"
 slug: workshop_memory
 description: MCP server for the Workshop Memory Obsidian vault
 arch:

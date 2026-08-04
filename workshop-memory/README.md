@@ -54,9 +54,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now workshop-deploy-agent
 ```
 
-Set the Home Assistant add-on options so `deploy_agent_url` points at the Pi,
-for example `http://<pi-tailscale-ip>:3010`, and `deploy_agent_token` matches
-the Pi token.
+For a persistent Home Assistant setup, install the separate
+`Workshop Deploy Agent` add-on from this repository. Set the Workshop Memory MCP
+add-on options so `deploy_agent_url` points at the Home Assistant host on port
+`3010`, for example `http://<home-assistant-ip>:3010`, and
+`deploy_agent_token` matches the deploy-agent add-on token.
 If Home Assistant is on a different device, bind
 `WORKSHOP_DEPLOY_AGENT_HOST` to the Pi's Tailscale IP instead of `0.0.0.0`.
 If you must bind all interfaces, restrict port `3010` with a firewall.

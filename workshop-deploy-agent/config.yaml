@@ -1,0 +1,23 @@
+name: Workshop Deploy Agent
+version: "0.1.0"
+slug: workshop_deploy_agent
+description: Trusted deployment agent for Workshop Memory server updates
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+ports:
+  3010/tcp: 3010
+ports_description:
+  3010/tcp: Workshop deploy-agent HTTP endpoint
+map:
+  - type: share
+    read_only: false
+options:
+  repo_path: "/share/Workshop-Memory-HA-App"
+  deploy_agent_token: null
+schema:
+  repo_path: str
+  deploy_agent_token: password
