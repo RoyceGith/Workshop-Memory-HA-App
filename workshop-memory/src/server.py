@@ -8,17 +8,20 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-try:
-    from mcp.server.mcpserver import MCPServer
-except ImportError:
-    from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 
-mcp = MCPServer("Workshop Memory MCP")
+mcp = FastMCP(
+    "Workshop Memory MCP",
+    host=os.getenv("WORKSHOP_MCP_HOST", "127.0.0.1"),
+    port=3001,
+    stateless_http=True,
+    json_response=True,
+)
 
 
 def load_settings() -> dict[str, Any]:
@@ -2472,12 +2475,6 @@ if __name__ == "__main__":
     transport = os.getenv("WORKSHOP_MCP_TRANSPORT", "stdio")
 
     if transport == "http":
-        mcp.run(
-            transport="streamable-http",
-            host=os.getenv("WORKSHOP_MCP_HOST", "127.0.0.1"),
-            port=3001,
-            stateless_http=True,
-            json_response=True,
-        )
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()
