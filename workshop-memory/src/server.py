@@ -2789,56 +2789,6 @@ def approve_server_update(
     }
 
 @mcp.tool()
-def check_deploy_agent_status():
-    """Return deployment-agent health without modifying or deploying anything."""
-    import json
-    import os
-    import urllib.error
-    import urllib.request
-
-    agent_url = os.environ.get("DEPLOY_AGENT_URL", "").rstrip("/")
-    token = os.environ.get("DEPLOY_AGENT_TOKEN", "")
-    result = {
-        "reachable": False,
-        "agent_url": agent_url,
-        "http_status": None,
-        "response_json": None,
-        "error": None,
-    }
-    if not agent_url:
-        result["error"] = {"type": "configuration_error", "message": "DEPLOY_AGENT_URL is not configured"}
-        return result
-
-    request = urllib.request.Request(
-        agent_url + "/health",
-        method="GET",
-        headers={"Accept": "application/json", "Authorization": "Bearer " + token},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            result["http_status"] = response.status
-            body = response.read().decode("utf-8", errors="replace")
-            if body:
-                try:
-                    result["response_json"] = json.loads(body)
-                except json.JSONDecodeError:
-                    pass
-            result["reachable"] = 200 <= response.status < 400
-    except urllib.error.HTTPError as exc:
-        result["http_status"] = exc.code
-        body = exc.read().decode("utf-8", errors="replace")
-        if body:
-            try:
-                result["response_json"] = json.loads(body)
-            except json.JSONDecodeError:
-                pass
-        result["error"] = {"type": type(exc).__name__, "message": str(exc)}
-    except Exception as exc:
-        result["error"] = {"type": type(exc).__name__, "message": str(exc)}
-    return result
-
-
-@mcp.tool()
 def apply_server_change(
     target_file: str,
     find_text: str,
@@ -2946,74 +2896,54 @@ def apply_server_change(
 @mcp.tool()
 def check_deploy_agent_status() -> dict[str, Any]:
     """Check the configured deploy agent health endpoint without mutating state."""
-    import json
-    from pathlib import Path
-    from urllib import error as urllib_error
-    from urllib import request as urllib_request
+    agent_url = os.getenv(
+        "WORKSHOP_DEPLOY_AGENT_URL",
+        "",
+    ).strip().rstrip("/")
 
-    timeout_seconds = 3.0
+    result: dict[str, Any] = {
+        "reachable": False,
+        "agent_url": agent_url,
+        "http_status": None,
+        "response_json": None,
+        "error": None,
+    }
+
+    if not agent_url:
+        result["error"] = {
+            "type": "configuration_error",
+            "message": "WORKSHOP_DEPLOY_AGENT_URL is not configured.",
+        }
+        return result
 
     try:
-        settings_path = Path("/app/config/settings.json")
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-
-        deploy_agent = settings.get("deploy_agent", {})
-        base_url = (
-            deploy_agent.get("url")
-            or deploy_agent.get("base_url")
-            or settings.get("deploy_agent_url")
-        )
-        if not base_url:
-            return {
-                "reachable": False,
-                "status_code": None,
-                "response_json": None,
-                "error": {
-                    "type": "ConfigurationError",
-                    "message": "Deploy agent URL is not configured.",
-                },
-            }
-
-        health_url = f"{str(base_url).rstrip('/')}/health"
-        request = urllib_request.Request(
-            health_url,
-            method="GET",
-            headers={"Accept": "application/json"},
+        response = httpx.get(
+            f"{agent_url}/health",
+            headers={
+                "Accept": "application/json",
+            },
+            timeout=3.0,
         )
 
-        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
-            status_code = response.getcode()
-            body = response.read().decode("utf-8", errors="replace")
-            try:
-                response_json = json.loads(body) if body else None
-            except json.JSONDecodeError:
-                response_json = None
+        result["http_status"] = response.status_code
+        result["reachable"] = response.status_code < 500
 
-            return {
-                "reachable": True,
-                "status_code": status_code,
-                "response_json": response_json,
-                "error": None,
-            }
-
-    except urllib_error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
         try:
-            response_json = json.loads(body) if body else None
-        except json.JSONDecodeError:
-            response_json = None
+            result["response_json"] = response.json()
+        except ValueError:
+            result["response_json"] = None
 
+        if response.status_code >= 400:
+            result["error"] = {
+                "type": "http_error",
+                "message": response.text,
+            }
+
+        return result
+    except httpx.RequestError as exc:
         return {
-            "reachable": True,
-            "status_code": exc.code,
-            "response_json": response_json,
-            "error": None,
-        }
-    except Exception as exc:
-        return {
+            **result,
             "reachable": False,
-            "status_code": None,
-            "response_json": None,
             "error": {
                 "type": type(exc).__name__,
                 "message": str(exc),
