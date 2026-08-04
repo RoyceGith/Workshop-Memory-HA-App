@@ -2038,8 +2038,6 @@ def create_project_from_general_session(
     created_files: list[str] = []
 
     try:
-        cover_path = create_project_cover(project_path, clean_project_name)
-
         for filename, content in notes.items():
             output_path = project_path / filename
 
