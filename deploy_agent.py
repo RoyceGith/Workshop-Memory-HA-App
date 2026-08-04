@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import re
 import subprocess
@@ -22,12 +23,32 @@ DEFAULT_ALLOWED_TARGETS = {
 VERSION_PATTERN = re.compile(
     r'(?m)^version:\s*"(\d+)\.(\d+)\.(\d+)"\s*$'
 )
+MIN_TOKEN_LENGTH = 32
 
 
 class DeployError(Exception):
     def __init__(self, message: str, status_code: int = 400) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def deploy_token() -> str:
+    token = os.getenv("WORKSHOP_DEPLOY_AGENT_TOKEN", "").strip()
+
+    if not token:
+        raise DeployError(
+            "Deployment-agent token is not configured.",
+            status_code=500,
+        )
+
+    if token == "replace-with-a-long-random-token" or len(token) < MIN_TOKEN_LENGTH:
+        raise DeployError(
+            "Deployment-agent token must be a non-placeholder value "
+            f"with at least {MIN_TOKEN_LENGTH} characters.",
+            status_code=500,
+        )
+
+    return token
 
 
 def repo_path() -> Path:
@@ -284,16 +305,15 @@ class DeployHandler(BaseHTTPRequestHandler):
             self.send_json({"detail": "Not found."}, status_code=404)
             return
 
-        token = os.getenv("WORKSHOP_DEPLOY_AGENT_TOKEN", "").strip()
-
-        if not token:
-            self.send_json(
-                {"detail": "Deployment-agent token is not configured."},
-                status_code=500,
-            )
+        try:
+            token = deploy_token()
+        except DeployError as error:
+            self.send_json({"detail": str(error)}, status_code=error.status_code)
             return
 
-        if self.headers.get("X-Workshop-Token") != token:
+        supplied_token = self.headers.get("X-Workshop-Token", "")
+
+        if not hmac.compare_digest(supplied_token, token):
             self.send_json({"detail": "Unauthorized."}, status_code=401)
             return
 
@@ -348,7 +368,7 @@ class DeployHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    host = os.getenv("WORKSHOP_DEPLOY_AGENT_HOST", "0.0.0.0")
+    host = os.getenv("WORKSHOP_DEPLOY_AGENT_HOST", "127.0.0.1")
     port = int(os.getenv("WORKSHOP_DEPLOY_AGENT_PORT", "3010"))
     server = ThreadingHTTPServer((host, port), DeployHandler)
 

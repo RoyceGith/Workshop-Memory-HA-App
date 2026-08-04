@@ -20,6 +20,8 @@ Endpoint:
 
 `apply_server_change` sends approved source updates to a separate deploy agent.
 The agent can run on a Raspberry Pi that has the Git repository cloned.
+No deploy token is committed to this repository. Use a unique random token of
+at least 32 characters.
 Make sure the Pi clone can commit and push first:
 
 ```sh
@@ -55,6 +57,9 @@ sudo systemctl enable --now workshop-deploy-agent
 Set the Home Assistant add-on options so `deploy_agent_url` points at the Pi,
 for example `http://<pi-tailscale-ip>:3010`, and `deploy_agent_token` matches
 the Pi token.
+If Home Assistant is on a different device, bind
+`WORKSHOP_DEPLOY_AGENT_HOST` to the Pi's Tailscale IP instead of `0.0.0.0`.
+If you must bind all interfaces, restrict port `3010` with a firewall.
 
 ## Project templates
 

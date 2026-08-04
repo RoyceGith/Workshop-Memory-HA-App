@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/pi/Workshop-Memory-HA-App
 Environment=WORKSHOP_REPO_PATH=/home/pi/Workshop-Memory-HA-App
-Environment=WORKSHOP_DEPLOY_AGENT_HOST=0.0.0.0
+Environment=WORKSHOP_DEPLOY_AGENT_HOST=127.0.0.1
 Environment=WORKSHOP_DEPLOY_AGENT_PORT=3010
 Environment=WORKSHOP_DEPLOY_AGENT_TOKEN=replace-with-a-long-random-token
 ExecStart=/usr/bin/python3 /home/pi/Workshop-Memory-HA-App/deploy_agent.py

@@ -1,5 +1,5 @@
 name: Workshop Memory MCP
-version: "0.1.15"
+version: "0.1.16"
 slug: workshop_memory
 description: MCP server for the Workshop Memory Obsidian vault
 arch:
@@ -16,7 +16,7 @@ map:
   - type: share
     read_only: false
 options:
-  deploy_agent_url: "http://100.92.96.41:3010"
+  deploy_agent_url: "http://127.0.0.1:3010"
   deploy_agent_token: null
 
 schema:

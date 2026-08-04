@@ -26,6 +26,7 @@ class DeployAgentTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.repo = Path(self.temporary_directory.name)
         self.previous_repo_path = os.environ.get("WORKSHOP_REPO_PATH")
+        self.previous_token = os.environ.get("WORKSHOP_DEPLOY_AGENT_TOKEN")
         os.environ["WORKSHOP_REPO_PATH"] = str(self.repo)
 
         (self.repo / "workshop-memory/src").mkdir(parents=True)
@@ -44,6 +45,11 @@ class DeployAgentTests(unittest.TestCase):
             os.environ.pop("WORKSHOP_REPO_PATH", None)
         else:
             os.environ["WORKSHOP_REPO_PATH"] = self.previous_repo_path
+
+        if self.previous_token is None:
+            os.environ.pop("WORKSHOP_DEPLOY_AGENT_TOKEN", None)
+        else:
+            os.environ["WORKSHOP_DEPLOY_AGENT_TOKEN"] = self.previous_token
 
         self.temporary_directory.cleanup()
 
@@ -85,6 +91,28 @@ class DeployAgentTests(unittest.TestCase):
             target,
             (self.repo / "workshop-memory/src/server.py").resolve(),
         )
+
+    def test_deploy_token_rejects_placeholder_and_short_values(self):
+        os.environ["WORKSHOP_DEPLOY_AGENT_TOKEN"] = (
+            "replace-with-a-long-random-token"
+        )
+
+        with self.assertRaisesRegex(
+            self.agent.DeployError,
+            "non-placeholder",
+        ):
+            self.agent.deploy_token()
+
+        os.environ["WORKSHOP_DEPLOY_AGENT_TOKEN"] = "too-short"
+
+        with self.assertRaisesRegex(
+            self.agent.DeployError,
+            "at least 32",
+        ):
+            self.agent.deploy_token()
+
+        os.environ["WORKSHOP_DEPLOY_AGENT_TOKEN"] = "a" * 32
+        self.assertEqual(self.agent.deploy_token(), "a" * 32)
 
 
 if __name__ == "__main__":
