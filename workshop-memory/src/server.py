@@ -2070,7 +2070,7 @@ def create_project_from_general_session(
             "project": clean_project_name,
             "project_folder": str(project_path),
             "created_files": created_files,
-            "created_assets": [cover_path],
+            "created_assets": [],
             "templates_folder": str(templates_path),
             "source_session": source_path.name,
             "source_session_archived": archive_source_session,
