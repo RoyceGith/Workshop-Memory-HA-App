@@ -63,6 +63,19 @@ If Home Assistant is on a different device, bind
 `WORKSHOP_DEPLOY_AGENT_HOST` to the Pi's Tailscale IP instead of `0.0.0.0`.
 If you must bind all interfaces, restrict port `3010` with a firewall.
 
+## Repository inspection
+
+The MCP server exposes read-only code inspection tools so ChatGPT can safely
+find where future server changes belong before using the trusted deploy agent:
+
+- `list_repository_files`
+- `read_repository_file`
+- `search_repository_code`
+
+Configure `code_repository_path` to the Git checkout under `/share`. The tools
+hide Git internals, dependency folders, bytecode, private keys, certificate/key
+files, and `.env`-style files.
+
 ## Project templates
 
 On first use, the app copies its five project templates into the vault at:

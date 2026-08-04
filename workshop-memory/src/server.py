@@ -126,6 +126,53 @@ PROJECT_IMAGE_SIGNATURES = {
     ".webp": (b"RIFF",),
     ".gif": (b"GIF87a", b"GIF89a"),
 }
+CODE_SEARCH_ALLOWED_SUFFIXES = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".vbs",
+    ".yaml",
+    ".yml",
+}
+CODE_SEARCH_ALLOWED_FILENAMES = {
+    ".gitignore",
+    "Dockerfile",
+}
+CODE_SEARCH_BLOCKED_NAMES = {
+    ".env",
+    ".netrc",
+    "authorized_keys",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+}
+CODE_SEARCH_BLOCKED_PARTS = {
+    ".git",
+    ".ssh",
+    "__pycache__",
+    "node_modules",
+}
+CODE_SEARCH_BLOCKED_SUFFIXES = {
+    ".crt",
+    ".der",
+    ".key",
+    ".p12",
+    ".pem",
+    ".pfx",
+    ".pyc",
+}
+MAX_CODE_FILE_READ_BYTES = 200_000
+MAX_CODE_SEARCH_RESULTS = 100
+MAX_CODE_LIST_RESULTS = 1_000
 
 mcp = FastMCP(
     "Workshop Memory MCP",
@@ -182,6 +229,96 @@ def load_settings() -> dict[str, Any]:
 
     settings["vault_path"] = str(vault_path)
     return settings
+
+
+def code_repository_root() -> Path:
+    """Resolve the configured read-only code repository root."""
+    configured_path = os.getenv(
+        "WORKSHOP_CODE_REPOSITORY_PATH",
+        "",
+    ).strip()
+
+    root = (
+        Path(configured_path).expanduser()
+        if configured_path
+        else PROJECT_ROOT.parent
+    ).resolve()
+
+    if not root.exists():
+        raise FileNotFoundError(
+            f"Code repository path does not exist: {root}"
+        )
+
+    if not root.is_dir():
+        raise NotADirectoryError(
+            f"Code repository path is not a directory: {root}"
+        )
+
+    return root
+
+
+def normalize_repository_relative_path(relative_path: str) -> str:
+    """Normalize a repository-relative path without allowing traversal."""
+    if not isinstance(relative_path, str):
+        raise ValueError("Repository path must be a string.")
+
+    normalized = relative_path.strip().replace("\\", "/").strip("/")
+
+    if normalized in {"", "."}:
+        return ""
+
+    path = Path(normalized)
+
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("Repository path must stay inside the repository.")
+
+    return normalized
+
+
+def resolve_repository_path(relative_path: str = "") -> Path:
+    """Resolve a safe repository-relative path."""
+    root = code_repository_root()
+    normalized = normalize_repository_relative_path(relative_path)
+    resolved_path = (root / normalized).resolve()
+
+    if resolved_path != root and root not in resolved_path.parents:
+        raise ValueError("Resolved path is outside the repository.")
+
+    return resolved_path
+
+
+def is_repository_path_blocked(path: Path) -> bool:
+    """Return whether a path should be hidden from code-reading tools."""
+    relative_parts = [
+        part.casefold()
+        for part in path.relative_to(code_repository_root()).parts
+    ]
+    name = path.name.casefold()
+    suffix = path.suffix.casefold()
+
+    return (
+        any(part in CODE_SEARCH_BLOCKED_PARTS for part in relative_parts)
+        or name in CODE_SEARCH_BLOCKED_NAMES
+        or suffix in CODE_SEARCH_BLOCKED_SUFFIXES
+        or name.endswith(".env")
+    )
+
+
+def is_repository_text_file(path: Path) -> bool:
+    """Return whether a file is eligible for read-only code inspection."""
+    return (
+        path.is_file()
+        and not is_repository_path_blocked(path)
+        and (
+            path.suffix.casefold() in CODE_SEARCH_ALLOWED_SUFFIXES
+            or path.name in CODE_SEARCH_ALLOWED_FILENAMES
+        )
+    )
+
+
+def repository_relative_path(path: Path) -> str:
+    """Return a stable POSIX-style repository-relative path."""
+    return path.relative_to(code_repository_root()).as_posix()
 
 
 def project_templates_path(create: bool = True) -> Path:
@@ -415,6 +552,222 @@ def check_server_status() -> dict[str, Any]:
         "vault_path": str(vault_path),
         "paths": checked_paths,
     }
+
+
+@mcp.tool()
+def list_repository_files(
+    path_prefix: str = "",
+    max_results: int = 500,
+) -> dict[str, Any]:
+    """
+    List safe, read-only source files from the configured code repository.
+
+    Secret-like paths, private keys, Git internals, bytecode, and dependency
+    folders are hidden.
+    """
+    root = code_repository_root()
+    start_path = resolve_repository_path(path_prefix)
+
+    if is_repository_path_blocked(start_path):
+        raise PermissionError("Repository path is blocked.")
+
+    if not start_path.exists():
+        raise FileNotFoundError(
+            f"Repository path was not found: {path_prefix}"
+        )
+
+    limit = max(1, min(int(max_results), MAX_CODE_LIST_RESULTS))
+    files: list[dict[str, Any]] = []
+
+    candidates = (
+        [start_path]
+        if start_path.is_file()
+        else sorted(
+            item
+            for item in start_path.rglob("*")
+            if item.is_file()
+        )
+    )
+
+    for candidate in candidates:
+        if not is_repository_text_file(candidate):
+            continue
+
+        files.append(
+            {
+                "path": repository_relative_path(candidate),
+                "size_bytes": candidate.stat().st_size,
+            }
+        )
+
+        if len(files) >= limit:
+            break
+
+    return {
+        "repository_root": str(root),
+        "path_prefix": normalize_repository_relative_path(path_prefix),
+        "count": len(files),
+        "max_results": limit,
+        "truncated": len(files) >= limit,
+        "files": files,
+    }
+
+
+@mcp.tool()
+def read_repository_file(
+    relative_path: str,
+    max_bytes: int = 100_000,
+) -> dict[str, Any]:
+    """
+    Read one safe source file from the configured repository.
+
+    This is read-only and refuses blocked secret/key paths and oversized reads.
+    """
+    path = resolve_repository_path(relative_path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Repository file was not found: {relative_path}"
+        )
+
+    if not is_repository_text_file(path):
+        raise PermissionError(
+            "Repository file is not permitted for code inspection."
+        )
+
+    file_size = path.stat().st_size
+    limit = max(1, min(int(max_bytes), MAX_CODE_FILE_READ_BYTES))
+
+    with path.open("rb") as source_file:
+        data = source_file.read(limit + 1)
+
+    truncated = len(data) > limit
+    data = data[:limit]
+
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Repository file is not valid UTF-8 text.") from exc
+
+    return {
+        "path": repository_relative_path(path),
+        "size_bytes": file_size,
+        "bytes_returned": len(data),
+        "max_bytes": limit,
+        "truncated": truncated,
+        "content": content,
+    }
+
+
+@mcp.tool()
+def search_repository_code(
+    query: str,
+    path_prefix: str = "",
+    case_sensitive: bool = False,
+    max_results: int = 50,
+    context_lines: int = 1,
+) -> dict[str, Any]:
+    """
+    Search safe repository source files for a literal text query.
+
+    This is read-only, does not use regex, and limits result count and context.
+    """
+    clean_query = query.strip()
+
+    if not clean_query:
+        raise ValueError("Search query cannot be empty.")
+
+    if len(clean_query) > 200:
+        raise ValueError("Search query must be 200 characters or fewer.")
+
+    start_path = resolve_repository_path(path_prefix)
+
+    if is_repository_path_blocked(start_path):
+        raise PermissionError("Repository path is blocked.")
+
+    if not start_path.exists():
+        raise FileNotFoundError(
+            f"Repository path was not found: {path_prefix}"
+        )
+
+    limit = max(1, min(int(max_results), MAX_CODE_SEARCH_RESULTS))
+    context = max(0, min(int(context_lines), 5))
+    needle = clean_query if case_sensitive else clean_query.casefold()
+    matches: list[dict[str, Any]] = []
+
+    candidates = (
+        [start_path]
+        if start_path.is_file()
+        else sorted(
+            item
+            for item in start_path.rglob("*")
+            if item.is_file()
+        )
+    )
+
+    for candidate in candidates:
+        if not is_repository_text_file(candidate):
+            continue
+
+        if candidate.stat().st_size > MAX_CODE_FILE_READ_BYTES:
+            continue
+
+        try:
+            content = candidate.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        lines = content.splitlines()
+
+        for index, line in enumerate(lines):
+            haystack = line if case_sensitive else line.casefold()
+
+            if needle not in haystack:
+                continue
+
+            start = max(0, index - context)
+            end = min(len(lines), index + context + 1)
+
+            matches.append(
+                {
+                    "path": repository_relative_path(candidate),
+                    "line": index + 1,
+                    "text": line[:500],
+                    "context": [
+                        {
+                            "line": line_index + 1,
+                            "text": lines[line_index][:500],
+                        }
+                        for line_index in range(start, end)
+                    ],
+                }
+            )
+
+            if len(matches) >= limit:
+                return {
+                    "repository_root": str(code_repository_root()),
+                    "query": clean_query,
+                    "path_prefix": normalize_repository_relative_path(
+                        path_prefix
+                    ),
+                    "case_sensitive": case_sensitive,
+                    "count": len(matches),
+                    "max_results": limit,
+                    "truncated": True,
+                    "matches": matches,
+                }
+
+    return {
+        "repository_root": str(code_repository_root()),
+        "query": clean_query,
+        "path_prefix": normalize_repository_relative_path(path_prefix),
+        "case_sensitive": case_sensitive,
+        "count": len(matches),
+        "max_results": limit,
+        "truncated": False,
+        "matches": matches,
+    }
+
 
 @mcp.tool()
 def get_profile_summary() -> dict[str, Any]:

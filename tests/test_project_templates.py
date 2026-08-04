@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -60,7 +61,15 @@ class ProjectTemplateTests(unittest.TestCase):
     def setUp(self):
         self.server = load_server_module()
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.vault = Path(self.temporary_directory.name) / "vault"
+        self.temp_path = Path(self.temporary_directory.name)
+        self.vault = self.temp_path / "vault"
+        self.code_repo = self.temp_path / "repo"
+        self.previous_code_repository_path = os.environ.get(
+            "WORKSHOP_CODE_REPOSITORY_PATH"
+        )
+        os.environ["WORKSHOP_CODE_REPOSITORY_PATH"] = str(self.code_repo)
+
+        self.code_repo.mkdir()
 
         for folder in (
             "Projects",
@@ -90,6 +99,13 @@ class ProjectTemplateTests(unittest.TestCase):
         self.server.SETTINGS_PATH = settings_path
 
     def tearDown(self):
+        if self.previous_code_repository_path is None:
+            os.environ.pop("WORKSHOP_CODE_REPOSITORY_PATH", None)
+        else:
+            os.environ["WORKSHOP_CODE_REPOSITORY_PATH"] = (
+                self.previous_code_repository_path
+            )
+
         self.temporary_directory.cleanup()
 
     def test_templates_are_seeded_and_drafts_require_approval(self):
@@ -267,6 +283,67 @@ class ProjectTemplateTests(unittest.TestCase):
                 "Workshop Memory MCP",
                 "update.md",
                 user_confirmed=True,
+            )
+
+    def test_repository_code_tools_read_and_search_safe_files(self):
+        source_path = self.code_repo / "workshop-memory/src/server.py"
+        source_path.parent.mkdir(parents=True)
+        source_path.write_text(
+            "def check_server_status():\n    return {'status': 'ok'}\n",
+            encoding="utf-8",
+        )
+        (self.code_repo / "README.md").write_text(
+            "# Workshop Memory\n",
+            encoding="utf-8",
+        )
+
+        listed = self.server.list_repository_files()
+        listed_paths = {item["path"] for item in listed["files"]}
+
+        self.assertIn("workshop-memory/src/server.py", listed_paths)
+        self.assertIn("README.md", listed_paths)
+
+        read_result = self.server.read_repository_file(
+            "workshop-memory/src/server.py"
+        )
+        self.assertIn("check_server_status", read_result["content"])
+
+        search_result = self.server.search_repository_code(
+            "check_server_status"
+        )
+
+        self.assertEqual(search_result["count"], 1)
+        self.assertEqual(
+            search_result["matches"][0]["path"],
+            "workshop-memory/src/server.py",
+        )
+
+    def test_repository_code_tools_block_secret_paths(self):
+        secret_path = self.code_repo / ".env"
+        secret_path.write_text(
+            "TOKEN=secret\n",
+            encoding="utf-8",
+        )
+        ssh_path = self.code_repo / ".ssh/id_ed25519"
+        ssh_path.parent.mkdir()
+        ssh_path.write_text(
+            "private-key\n",
+            encoding="utf-8",
+        )
+
+        listed = self.server.list_repository_files()
+        listed_paths = {item["path"] for item in listed["files"]}
+
+        self.assertNotIn(".env", listed_paths)
+        self.assertNotIn(".ssh/id_ed25519", listed_paths)
+
+        with self.assertRaises(PermissionError):
+            self.server.read_repository_file(".env")
+
+        with self.assertRaises(PermissionError):
+            self.server.search_repository_code(
+                "private-key",
+                path_prefix=".ssh",
             )
 
 
