@@ -232,6 +232,43 @@ class ProjectTemplateTests(unittest.TestCase):
         self.assertEqual(result["obsidian_embed"], "![[assets/status.png]]")
         self.assertTrue(Path(result["path"]).is_file())
 
+    def test_missing_project_update_sections_are_ignored(self):
+        self.assertIsNone(
+            self.server.meaningful_update_section(
+                "# Draft\n\n## Other Section\n\nUseful content.\n",
+                "Update Summary",
+            )
+        )
+
+        combined = self.server.combine_update_sections(
+            "# Draft\n\n## Update Summary\n\nUseful content.\n",
+            ["Missing Section", "Update Summary"],
+        )
+
+        self.assertEqual(
+            combined,
+            "### Update Summary\n\nUseful content.",
+        )
+
+    def test_project_update_draft_without_metadata_has_clear_error(self):
+        project_path = self.vault / "Projects/Workshop Memory MCP"
+        project_path.mkdir()
+        draft_path = self.vault / "Sessions/Inbox/update.md"
+        draft_path.write_text(
+            "# Project Update\n\n## Update Summary\n\nUpdated deployment notes.\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing Session Metadata",
+        ):
+            self.server.apply_project_update_draft(
+                "Workshop Memory MCP",
+                "update.md",
+                user_confirmed=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

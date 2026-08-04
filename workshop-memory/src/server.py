@@ -2173,10 +2173,12 @@ def save_project_update_draft_from_handoff(
 
 def meaningful_update_section(content: str, heading: str) -> str | None:
     """Return a useful H2 section, excluding empty placeholder content."""
-    value = extract_handoff_section(content, heading).strip()
+    value = extract_handoff_section(content, heading)
 
     if not value:
         return None
+
+    value = value.strip()
 
     normalized = value.casefold().strip(" \n\r\t-")
 
@@ -2250,6 +2252,11 @@ def apply_project_update_draft(
         draft_content,
         "Session Metadata",
     )
+
+    if not metadata:
+        raise ValueError(
+            "The selected session is missing Session Metadata."
+        )
 
     if "**Session type:** Project Update" not in metadata:
         raise ValueError(
