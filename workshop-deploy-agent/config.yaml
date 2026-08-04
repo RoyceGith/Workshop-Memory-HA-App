@@ -1,5 +1,5 @@
 name: Workshop Deploy Agent
-version: "0.1.3"
+version: "0.1.4"
 slug: workshop_deploy_agent
 description: Trusted deployment agent for Workshop Memory server updates
 arch:

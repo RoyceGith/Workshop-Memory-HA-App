@@ -150,13 +150,19 @@ class DeployAgentTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(
                 self.agent.DeployError,
-                "uncommitted changes",
+                "non-generated changes",
             ):
                 self.agent.preflight_git_sync(self.repo)
         finally:
             self.agent.require_command = original_require_command
 
-        self.assertEqual(calls, [["git", "status", "--porcelain"]])
+        self.assertEqual(
+            calls,
+            [
+                ["git", "status", "--porcelain"],
+                ["git", "status", "--porcelain"],
+            ],
+        )
 
     def test_preflight_fast_forwards_when_behind_origin_main(self):
         responses = {
@@ -172,7 +178,7 @@ class DeployAgentTests(unittest.TestCase):
         def fake_require_command(command, root, failure):
             return responses[tuple(command)]
 
-        def fake_run_command(command, root):
+        def fake_run_command(command, root, env=None):
             run_commands.append(command)
 
             class Result:
@@ -199,19 +205,32 @@ class DeployAgentTests(unittest.TestCase):
             run_commands,
         )
 
-    def test_preflight_refuses_local_ahead_repository(self):
+    def test_preflight_pushes_pending_local_commits(self):
         responses = {
             ("git", "status", "--porcelain"): "",
             ("git", "branch", "--show-current"): "main",
             ("git", "fetch", "origin"): "",
             ("git", "rev-parse", "HEAD"): "local",
             ("git", "rev-parse", "origin/main"): "remote",
+            ("git", "push", "origin", "main"): "",
         }
+        run_commands = []
+        rev_parse_origin_calls = 0
 
         def fake_require_command(command, root, failure):
+            nonlocal rev_parse_origin_calls
+
+            if command == ["git", "rev-parse", "origin/main"]:
+                rev_parse_origin_calls += 1
+
+                if rev_parse_origin_calls > 1:
+                    return "local"
+
             return responses[tuple(command)]
 
-        def fake_run_command(command, root):
+        def fake_run_command(command, root, env=None):
+            run_commands.append(command)
+
             class Result:
                 stdout = ""
                 stderr = ""
@@ -235,32 +254,40 @@ class DeployAgentTests(unittest.TestCase):
         self.agent.run_command = fake_run_command
 
         try:
-            with self.assertRaisesRegex(
-                self.agent.DeployError,
-                "local commits",
-            ):
-                self.agent.preflight_git_sync(self.repo)
+            result = self.agent.preflight_git_sync(self.repo)
         finally:
             self.agent.require_command = original_require_command
             self.agent.run_command = original_run_command
 
-    def test_preflight_refuses_diverged_repository(self):
+        self.assertEqual(result["status"], "pushed_pending_local_commits")
+        self.assertIn(
+            ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"],
+            run_commands,
+        )
+
+    def test_preflight_refuses_diverged_source_conflicts(self):
         responses = {
             ("git", "status", "--porcelain"): "",
             ("git", "branch", "--show-current"): "main",
             ("git", "fetch", "origin"): "",
             ("git", "rev-parse", "HEAD"): "local",
             ("git", "rev-parse", "origin/main"): "remote",
+            ("git", "diff", "--name-only", "--diff-filter=U"): (
+                "workshop-memory/src/server.py"
+            ),
         }
 
         def fake_require_command(command, root, failure):
             return responses[tuple(command)]
 
-        def fake_run_command(command, root):
+        def fake_run_command(command, root, env=None):
             class Result:
                 returncode = 1
                 stdout = ""
                 stderr = ""
+
+                if command == ["git", "rebase", "--abort"]:
+                    returncode = 0
 
             return Result()
 
@@ -272,12 +299,52 @@ class DeployAgentTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(
                 self.agent.DeployError,
-                "diverged",
+                "source conflicts",
             ):
                 self.agent.preflight_git_sync(self.repo)
         finally:
             self.agent.require_command = original_require_command
             self.agent.run_command = original_run_command
+
+    def test_resolve_version_config_conflict_uses_next_highest_patch(self):
+        config_path = self.repo / "workshop-memory/config.yaml"
+        config_path.write_text(
+            'name: Workshop Memory MCP\n'
+            '<<<<<<< HEAD\n'
+            'version: "0.1.21"\n'
+            '=======\n'
+            'version: "0.1.19"\n'
+            '>>>>>>> local\n'
+            "slug: workshop_memory\n",
+            encoding="utf-8",
+        )
+
+        staged = []
+
+        def fake_require_command(command, root, failure):
+            staged.append(command)
+            return ""
+
+        original_require_command = self.agent.require_command
+        self.agent.require_command = fake_require_command
+
+        try:
+            version = self.agent.resolve_version_config_conflict(
+                self.repo,
+                "workshop-memory/config.yaml",
+            )
+        finally:
+            self.agent.require_command = original_require_command
+
+        self.assertEqual(version, "0.1.22")
+        self.assertIn(
+            'version: "0.1.22"',
+            config_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            ["git", "add", "workshop-memory/config.yaml"],
+            staged,
+        )
 
 
 if __name__ == "__main__":
