@@ -13,6 +13,10 @@ from typing import Any
 
 
 DEFAULT_ALLOWED_TARGETS = {
+    "deploy_agent.py",
+    "workshop-deploy-agent/config.yaml",
+    "workshop-deploy-agent/Dockerfile",
+    "workshop-deploy-agent/run.sh",
     "workshop-memory/src/server.py",
     "workshop-memory/config.yaml",
     "workshop-memory/run.sh",
@@ -144,6 +148,60 @@ def ensure_git_repo(root: Path) -> None:
         )
 
 
+def preflight_git_sync(root: Path) -> None:
+    """Refuse deployment unless the repository is clean and synced."""
+    status = require_command(
+        ["git", "status", "--porcelain"],
+        root,
+        "Could not read Git status",
+    )
+
+    if status:
+        raise DeployError(
+            "Repository has uncommitted changes. Refusing to deploy before "
+            "modifying files. Run `git status`, resolve or commit the changes, "
+            "then retry.",
+            status_code=409,
+        )
+
+    require_command(
+        ["git", "fetch", "origin"],
+        root,
+        "git fetch origin failed",
+    )
+
+    branch = require_command(
+        ["git", "branch", "--show-current"],
+        root,
+        "Could not determine current Git branch",
+    )
+
+    if branch != "main":
+        raise DeployError(
+            f"Repository is on branch `{branch}`, not `main`. Refusing to deploy.",
+            status_code=409,
+        )
+
+    local_head = require_command(
+        ["git", "rev-parse", "HEAD"],
+        root,
+        "Could not read local HEAD",
+    )
+    remote_head = require_command(
+        ["git", "rev-parse", "origin/main"],
+        root,
+        "Could not read origin/main",
+    )
+
+    if local_head != remote_head:
+        raise DeployError(
+            "Repository is not exactly synced with origin/main. Refusing to "
+            "deploy before modifying files. Run `git pull --ff-only` if the "
+            "branch is only behind, or resolve divergence manually, then retry.",
+            status_code=409,
+        )
+
+
 def validate_payload(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     target_file = normalize_target(payload.get("target_file"))
     find_text = payload.get("find_text")
@@ -163,6 +221,16 @@ def validate_payload(payload: dict[str, Any]) -> tuple[str, str, str, str]:
         raise DeployError("A reason for the server change is required.")
 
     return target_file, find_text, replacement_text, reason.strip()
+
+
+def config_path_for_target(root: Path, target_file: str) -> Path:
+    """Return the Home Assistant add-on config whose version should be bumped."""
+    if target_file == "deploy_agent.py" or target_file.startswith(
+        "workshop-deploy-agent/"
+    ):
+        return resolve_target(root, "workshop-deploy-agent/config.yaml")
+
+    return resolve_target(root, "workshop-memory/config.yaml")
 
 
 def bump_patch_version(config_path: Path) -> tuple[str, str]:
@@ -195,9 +263,10 @@ def apply_change(payload: dict[str, Any]) -> dict[str, Any]:
     root = repo_path()
     target_file, find_text, replacement_text, reason = validate_payload(payload)
     target_path = resolve_target(root, target_file)
-    config_path = resolve_target(root, "workshop-memory/config.yaml")
+    config_path = config_path_for_target(root, target_file)
 
     ensure_git_repo(root)
+    preflight_git_sync(root)
 
     original_target = target_path.read_text(encoding="utf-8")
     original_config = config_path.read_text(encoding="utf-8")
@@ -233,7 +302,12 @@ def apply_change(payload: dict[str, Any]) -> dict[str, Any]:
         previous_version, new_version = bump_patch_version(config_path)
 
         require_command(
-            ["git", "add", target_file, "workshop-memory/config.yaml"],
+            [
+                "git",
+                "add",
+                target_file,
+                str(config_path.relative_to(root)).replace("\\", "/"),
+            ],
             root,
             "git add failed",
         )
@@ -283,7 +357,7 @@ def apply_change(payload: dict[str, Any]) -> dict[str, Any]:
                     "restore",
                     "--staged",
                     target_file,
-                    "workshop-memory/config.yaml",
+                    str(config_path.relative_to(root)).replace("\\", "/"),
                 ],
                 root,
             )

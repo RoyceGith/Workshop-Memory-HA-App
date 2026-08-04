@@ -180,9 +180,10 @@ class ProjectTemplateTests(unittest.TestCase):
         )
 
         self.assertIn("# Visual Project", overview)
-        self.assertIn("![[assets/project-cover.svg]]", overview)
+        self.assertEqual(result["created_assets"], [])
+        self.assertNotIn("![[assets/project-cover.svg]]", overview)
         self.assertNotIn("{{project_name}}", overview)
-        self.assertTrue((project_path / "assets/project-cover.svg").is_file())
+        self.assertFalse((project_path / "assets").exists())
 
     def test_incomplete_template_drafts_are_rejected(self):
         template = self.server.get_project_template("Project Overview.md")

@@ -114,6 +114,74 @@ class DeployAgentTests(unittest.TestCase):
         os.environ["WORKSHOP_DEPLOY_AGENT_TOKEN"] = "a" * 32
         self.assertEqual(self.agent.deploy_token(), "a" * 32)
 
+    def test_deploy_agent_targets_bump_deploy_agent_addon(self):
+        (self.repo / "deploy_agent.py").write_text(
+            "print('agent')\n",
+            encoding="utf-8",
+        )
+        (self.repo / "workshop-deploy-agent").mkdir()
+        deploy_config = self.repo / "workshop-deploy-agent/config.yaml"
+        deploy_config.write_text(
+            'name: Workshop Deploy Agent\nversion: "2.3.4"\n',
+            encoding="utf-8",
+        )
+
+        config_path = self.agent.config_path_for_target(
+            self.repo,
+            "deploy_agent.py",
+        )
+
+        self.assertEqual(config_path, deploy_config.resolve())
+
+    def test_preflight_refuses_dirty_repository_before_fetch(self):
+        calls = []
+
+        def fake_require_command(command, root, failure):
+            calls.append(command)
+
+            if command == ["git", "status", "--porcelain"]:
+                return " M deploy_agent.py"
+
+            return ""
+
+        original_require_command = self.agent.require_command
+        self.agent.require_command = fake_require_command
+
+        try:
+            with self.assertRaisesRegex(
+                self.agent.DeployError,
+                "uncommitted changes",
+            ):
+                self.agent.preflight_git_sync(self.repo)
+        finally:
+            self.agent.require_command = original_require_command
+
+        self.assertEqual(calls, [["git", "status", "--porcelain"]])
+
+    def test_preflight_refuses_when_not_synced_with_origin_main(self):
+        responses = {
+            ("git", "status", "--porcelain"): "",
+            ("git", "fetch", "origin"): "",
+            ("git", "branch", "--show-current"): "main",
+            ("git", "rev-parse", "HEAD"): "local",
+            ("git", "rev-parse", "origin/main"): "remote",
+        }
+
+        def fake_require_command(command, root, failure):
+            return responses[tuple(command)]
+
+        original_require_command = self.agent.require_command
+        self.agent.require_command = fake_require_command
+
+        try:
+            with self.assertRaisesRegex(
+                self.agent.DeployError,
+                "not exactly synced",
+            ):
+                self.agent.preflight_git_sync(self.repo)
+        finally:
+            self.agent.require_command = original_require_command
+
 
 if __name__ == "__main__":
     unittest.main()
