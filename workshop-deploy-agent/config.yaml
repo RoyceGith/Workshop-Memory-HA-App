@@ -1,5 +1,5 @@
 name: Workshop Deploy Agent
-version: "0.1.0"
+version: "0.1.1"
 slug: workshop_deploy_agent
 description: Trusted deployment agent for Workshop Memory server updates
 arch:
@@ -18,6 +18,10 @@ map:
 options:
   repo_path: "/share/Workshop-Memory-HA-App"
   deploy_agent_token: null
+  git_remote_url: "git@github.com:RoyceGith/Workshop-Memory-HA-App.git"
+  git_ssh_key_path: "/share/workshop-deploy-agent/id_ed25519"
 schema:
   repo_path: str
   deploy_agent_token: password
+  git_remote_url: str
+  git_ssh_key_path: str
