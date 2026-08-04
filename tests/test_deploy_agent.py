@@ -158,11 +158,52 @@ class DeployAgentTests(unittest.TestCase):
 
         self.assertEqual(calls, [["git", "status", "--porcelain"]])
 
-    def test_preflight_refuses_when_not_synced_with_origin_main(self):
+    def test_preflight_fast_forwards_when_behind_origin_main(self):
         responses = {
             ("git", "status", "--porcelain"): "",
-            ("git", "fetch", "origin"): "",
             ("git", "branch", "--show-current"): "main",
+            ("git", "fetch", "origin"): "",
+            ("git", "rev-parse", "HEAD"): "local",
+            ("git", "rev-parse", "origin/main"): "remote",
+            ("git", "pull", "--ff-only"): "",
+        }
+        run_commands = []
+
+        def fake_require_command(command, root, failure):
+            return responses[tuple(command)]
+
+        def fake_run_command(command, root):
+            run_commands.append(command)
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        original_require_command = self.agent.require_command
+        original_run_command = self.agent.run_command
+        self.agent.require_command = fake_require_command
+        self.agent.run_command = fake_run_command
+
+        try:
+            result = self.agent.preflight_git_sync(self.repo)
+        finally:
+            self.agent.require_command = original_require_command
+            self.agent.run_command = original_run_command
+
+        self.assertEqual(result["status"], "fast_forwarded")
+        self.assertIn(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+            run_commands,
+        )
+
+    def test_preflight_refuses_local_ahead_repository(self):
+        responses = {
+            ("git", "status", "--porcelain"): "",
+            ("git", "branch", "--show-current"): "main",
+            ("git", "fetch", "origin"): "",
             ("git", "rev-parse", "HEAD"): "local",
             ("git", "rev-parse", "origin/main"): "remote",
         }
@@ -170,17 +211,73 @@ class DeployAgentTests(unittest.TestCase):
         def fake_require_command(command, root, failure):
             return responses[tuple(command)]
 
+        def fake_run_command(command, root):
+            class Result:
+                stdout = ""
+                stderr = ""
+
+                if command == [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    "HEAD",
+                    "origin/main",
+                ]:
+                    returncode = 1
+                else:
+                    returncode = 0
+
+            return Result()
+
         original_require_command = self.agent.require_command
+        original_run_command = self.agent.run_command
         self.agent.require_command = fake_require_command
+        self.agent.run_command = fake_run_command
 
         try:
             with self.assertRaisesRegex(
                 self.agent.DeployError,
-                "not exactly synced",
+                "local commits",
             ):
                 self.agent.preflight_git_sync(self.repo)
         finally:
             self.agent.require_command = original_require_command
+            self.agent.run_command = original_run_command
+
+    def test_preflight_refuses_diverged_repository(self):
+        responses = {
+            ("git", "status", "--porcelain"): "",
+            ("git", "branch", "--show-current"): "main",
+            ("git", "fetch", "origin"): "",
+            ("git", "rev-parse", "HEAD"): "local",
+            ("git", "rev-parse", "origin/main"): "remote",
+        }
+
+        def fake_require_command(command, root, failure):
+            return responses[tuple(command)]
+
+        def fake_run_command(command, root):
+            class Result:
+                returncode = 1
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        original_require_command = self.agent.require_command
+        original_run_command = self.agent.run_command
+        self.agent.require_command = fake_require_command
+        self.agent.run_command = fake_run_command
+
+        try:
+            with self.assertRaisesRegex(
+                self.agent.DeployError,
+                "diverged",
+            ):
+                self.agent.preflight_git_sync(self.repo)
+        finally:
+            self.agent.require_command = original_require_command
+            self.agent.run_command = original_run_command
 
 
 if __name__ == "__main__":

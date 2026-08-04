@@ -148,8 +148,8 @@ def ensure_git_repo(root: Path) -> None:
         )
 
 
-def preflight_git_sync(root: Path) -> None:
-    """Refuse deployment unless the repository is clean and synced."""
+def preflight_git_sync(root: Path) -> dict[str, Any]:
+    """Fast-forward a clean behind branch and refuse risky states."""
     status = require_command(
         ["git", "status", "--porcelain"],
         root,
@@ -164,12 +164,6 @@ def preflight_git_sync(root: Path) -> None:
             status_code=409,
         )
 
-    require_command(
-        ["git", "fetch", "origin"],
-        root,
-        "git fetch origin failed",
-    )
-
     branch = require_command(
         ["git", "branch", "--show-current"],
         root,
@@ -182,6 +176,12 @@ def preflight_git_sync(root: Path) -> None:
             status_code=409,
         )
 
+    require_command(
+        ["git", "fetch", "origin"],
+        root,
+        "git fetch origin failed",
+    )
+
     local_head = require_command(
         ["git", "rev-parse", "HEAD"],
         root,
@@ -193,13 +193,61 @@ def preflight_git_sync(root: Path) -> None:
         "Could not read origin/main",
     )
 
-    if local_head != remote_head:
+    if local_head == remote_head:
+        return {
+            "status": "already_synced",
+            "branch": branch,
+            "head": local_head,
+        }
+
+    local_is_ancestor = run_command(
+        ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+        root,
+    )
+    remote_is_ancestor = run_command(
+        ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"],
+        root,
+    )
+
+    if local_is_ancestor.returncode == 0:
+        require_command(
+            ["git", "pull", "--ff-only"],
+            root,
+            "git pull --ff-only failed",
+        )
+        updated_head = require_command(
+            ["git", "rev-parse", "HEAD"],
+            root,
+            "Could not read updated HEAD",
+        )
+
+        return {
+            "status": "fast_forwarded",
+            "branch": branch,
+            "previous_head": local_head,
+            "head": updated_head,
+            "remote_head": remote_head,
+        }
+
+    if remote_is_ancestor.returncode == 0:
         raise DeployError(
-            "Repository is not exactly synced with origin/main. Refusing to "
-            "deploy before modifying files. Run `git pull --ff-only` if the "
-            "branch is only behind, or resolve divergence manually, then retry.",
+            "Repository has local commits that are not on origin/main. "
+            "Refusing to deploy before modifying files. Push or resolve the "
+            "local commits manually, then retry.",
             status_code=409,
         )
+
+    if local_is_ancestor.returncode == 1 and remote_is_ancestor.returncode == 1:
+        raise DeployError(
+            "Repository has diverged from origin/main. Refusing to deploy "
+            "before modifying files. Resolve the divergence manually, then retry.",
+            status_code=409,
+        )
+
+    raise DeployError(
+        "Could not determine repository sync state. Refusing to deploy.",
+        status_code=500,
+    )
 
 
 def validate_payload(payload: dict[str, Any]) -> tuple[str, str, str, str]:
