@@ -2027,7 +2027,9 @@ def create_project_from_general_session(
     notes = {
         filename: render_project_template(
             filename,
-            (templates_path / filename).read_text(encoding="utf-8"),
+            (templates_path / filename)
+            .read_text(encoding="utf-8")
+            .replace("![[assets/project-cover.svg]]\n\n", ""),
             template_values,
         )
         for filename in PROJECT_TEMPLATE_FILENAMES
