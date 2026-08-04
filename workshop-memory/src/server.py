@@ -2090,15 +2090,6 @@ def create_project_from_general_session(
             if file_path.exists():
                 file_path.unlink()
 
-        assets_path = project_path / "assets"
-        cover_file = assets_path / "project-cover.svg"
-
-        if cover_file.exists():
-            cover_file.unlink()
-
-        if assets_path.exists() and not any(assets_path.iterdir()):
-            assets_path.rmdir()
-
         if project_path.exists() and not any(project_path.iterdir()):
             project_path.rmdir()
 
