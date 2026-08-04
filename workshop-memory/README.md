@@ -16,6 +16,46 @@ Endpoint:
 
 `http://<home-assistant-ip>:3001/mcp`
 
+## Server update agent
+
+`apply_server_change` sends approved source updates to a separate deploy agent.
+The agent can run on a Raspberry Pi that has the Git repository cloned.
+Make sure the Pi clone can commit and push first:
+
+```sh
+git status
+git config user.name
+git config user.email
+git push --dry-run
+```
+
+On the Pi:
+
+```sh
+cd /home/pi/Workshop-Memory-HA-App
+export WORKSHOP_REPO_PATH=/home/pi/Workshop-Memory-HA-App
+export WORKSHOP_DEPLOY_AGENT_TOKEN='replace-with-a-long-random-token'
+python3 deploy_agent.py
+```
+
+The agent listens on port `3010` by default and exposes:
+
+- `GET /health`
+- `POST /apply-change`
+
+For systemd, copy `deploy_agent.service.example` to
+`/etc/systemd/system/workshop-deploy-agent.service`, edit the paths and token,
+then enable it:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now workshop-deploy-agent
+```
+
+Set the Home Assistant add-on options so `deploy_agent_url` points at the Pi,
+for example `http://<pi-tailscale-ip>:3010`, and `deploy_agent_token` matches
+the Pi token.
+
 ## Project templates
 
 On first use, the app copies its five project templates into the vault at:
