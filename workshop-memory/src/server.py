@@ -35,6 +35,87 @@ PROJECT_TEMPLATE_FIELDS = {
     "open_questions",
     "next_actions",
 }
+PROJECT_TEMPLATE_REQUIREMENTS = {
+    "Project Overview.md": {
+        "headings": (
+            "Objective",
+            "Current Stage",
+            "Background",
+            "Current Knowledge",
+            "Open Questions",
+            "Next Actions",
+            "Source Session",
+            "Review Status",
+        ),
+        "placeholders": (
+            "project_name",
+            "conclusions",
+            "discussion",
+            "useful_information",
+            "open_questions",
+            "next_actions",
+            "source_session",
+        ),
+    },
+    "Requirements.md": {
+        "headings": (
+            "Project Goal",
+            "Initial Requirements",
+            "Open Requirements",
+            "Constraints",
+            "Acceptance Criteria",
+            "Source Session",
+            "Review Status",
+        ),
+        "placeholders": (
+            "project_name",
+            "conclusions",
+            "useful_information",
+            "open_questions",
+            "source_session",
+        ),
+    },
+    "Design Decisions.md": {
+        "headings": (
+            "Proposed Decisions from Source Session",
+            "Review Status",
+        ),
+        "placeholders": (
+            "project_name",
+            "decisions",
+        ),
+    },
+    "Session Handoff.md": {
+        "headings": (
+            "Current Project Stage",
+            "Current Working State",
+            "Background",
+            "Conclusions Reached",
+            "Open Questions",
+            "Next Actions",
+            "Review Status",
+        ),
+        "placeholders": (
+            "project_name",
+            "source_session",
+            "discussion",
+            "conclusions",
+            "open_questions",
+            "next_actions",
+        ),
+    },
+    "Test Log.md": {
+        "headings": (
+            "Current Test Status",
+            "Source Session",
+            "Review Status",
+        ),
+        "placeholders": (
+            "project_name",
+            "source_session",
+        ),
+    },
+}
 PROJECT_TEMPLATE_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 MAX_PROJECT_TEMPLATE_SIZE = 200_000
 MAX_PROJECT_IMAGE_SIZE = 8 * 1024 * 1024
@@ -155,8 +236,14 @@ def resolve_project_template(template_name: str) -> Path:
     return project_templates_path() / clean_name
 
 
-def validate_project_template(content: str) -> list[str]:
-    """Validate template size and return the placeholders it uses."""
+def validate_project_template(
+    template_name: str,
+    content: str,
+) -> list[str]:
+    """Validate a template's required structure and placeholders."""
+    if template_name not in PROJECT_TEMPLATE_REQUIREMENTS:
+        raise ValueError(f"Unknown project template: {template_name}")
+
     if not content.strip():
         raise ValueError("Project template content cannot be empty.")
 
@@ -172,20 +259,43 @@ def validate_project_template(content: str) -> list[str]:
             + ", ".join(unknown_fields)
         )
 
-    if "project_name" not in fields:
+    requirements = PROJECT_TEMPLATE_REQUIREMENTS[template_name]
+    missing_fields = sorted(
+        set(requirements["placeholders"]) - set(fields)
+    )
+
+    if missing_fields:
         raise ValueError(
-            "Project template must include {{project_name}}."
+            "Project template is missing required placeholders: "
+            + ", ".join(f"{{{{{field}}}}}" for field in missing_fields)
+        )
+
+    missing_headings = [
+        heading
+        for heading in requirements["headings"]
+        if not re.search(
+            rf"^##\s+{re.escape(heading)}\s*$",
+            content,
+            flags=re.MULTILINE,
+        )
+    ]
+
+    if missing_headings:
+        raise ValueError(
+            "Project template is missing required H2 sections: "
+            + ", ".join(missing_headings)
         )
 
     return fields
 
 
 def render_project_template(
+    template_name: str,
     content: str,
     values: dict[str, str],
 ) -> str:
     """Render a validated project template using known literal fields."""
-    validate_project_template(content)
+    validate_project_template(template_name, content)
 
     def replace_field(match: re.Match[str]) -> str:
         value = values.get(match.group(1), "Not documented")
@@ -1268,7 +1378,16 @@ def list_project_templates() -> dict[str, Any]:
             {
                 "template_name": filename,
                 "path": str(template_path),
-                "placeholders": validate_project_template(content),
+                "placeholders": validate_project_template(
+                    filename,
+                    content,
+                ),
+                "required_headings": list(
+                    PROJECT_TEMPLATE_REQUIREMENTS[filename]["headings"]
+                ),
+                "required_placeholders": list(
+                    PROJECT_TEMPLATE_REQUIREMENTS[filename]["placeholders"]
+                ),
                 "draft_exists": (
                     templates_path / ".drafts" / filename
                 ).is_file(),
@@ -1289,18 +1408,42 @@ def get_project_template(template_name: str) -> dict[str, Any]:
     template_path = resolve_project_template(template_name)
     content = template_path.read_text(encoding="utf-8")
     draft_path = template_path.parent / ".drafts" / template_path.name
+    draft_content = (
+        draft_path.read_text(encoding="utf-8")
+        if draft_path.is_file()
+        else None
+    )
+    draft_valid: bool | None = None
+    draft_validation_error: str | None = None
+
+    if draft_content is not None:
+        try:
+            validate_project_template(template_path.name, draft_content)
+            draft_valid = True
+        except ValueError as exc:
+            draft_valid = False
+            draft_validation_error = str(exc)
 
     return {
         "template_name": template_path.name,
         "path": str(template_path),
         "content": content,
-        "placeholders": validate_project_template(content),
-        "draft_path": str(draft_path) if draft_path.is_file() else None,
-        "draft_content": (
-            draft_path.read_text(encoding="utf-8")
-            if draft_path.is_file()
-            else None
+        "placeholders": validate_project_template(
+            template_path.name,
+            content,
         ),
+        "required_headings": list(
+            PROJECT_TEMPLATE_REQUIREMENTS[template_path.name]["headings"]
+        ),
+        "required_placeholders": list(
+            PROJECT_TEMPLATE_REQUIREMENTS[
+                template_path.name
+            ]["placeholders"]
+        ),
+        "draft_path": str(draft_path) if draft_path.is_file() else None,
+        "draft_content": draft_content,
+        "draft_valid": draft_valid,
+        "draft_validation_error": draft_validation_error,
     }
 
 
@@ -1316,7 +1459,7 @@ def save_project_template_draft(
     apply_project_template_draft only after explicit user approval.
     """
     template_path = resolve_project_template(template_name)
-    placeholders = validate_project_template(content)
+    placeholders = validate_project_template(template_path.name, content)
     drafts_path = template_path.parent / ".drafts"
     drafts_path.mkdir(exist_ok=True)
     draft_path = drafts_path / template_path.name
@@ -1361,7 +1504,10 @@ def apply_project_template_draft(
         )
 
     draft_content = draft_path.read_text(encoding="utf-8")
-    placeholders = validate_project_template(draft_content)
+    placeholders = validate_project_template(
+        template_path.name,
+        draft_content,
+    )
     archive_path = template_path.parent / ".archive"
     archive_path.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -1527,6 +1673,7 @@ def create_project_from_general_session(
     templates_path = project_templates_path()
     notes = {
         filename: render_project_template(
+            filename,
             (templates_path / filename).read_text(encoding="utf-8"),
             template_values,
         )

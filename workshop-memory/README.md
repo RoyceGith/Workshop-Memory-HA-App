@@ -31,6 +31,8 @@ Template changes use a review workflow: save a draft with
 `save_project_template_draft`, then apply it with
 `apply_project_template_draft` only after explicit user approval. Previous
 template versions are retained in the template folder's `.archive` directory.
+Draft validation also requires every original H2 section and source-data
+placeholder, preventing visual edits from dropping project information.
 
 New projects include an `assets/project-cover.svg` cover and can use Obsidian
 callouts, tables, Mermaid diagrams, and local embedded images. Existing projects

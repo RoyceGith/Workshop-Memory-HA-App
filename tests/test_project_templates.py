@@ -168,6 +168,53 @@ class ProjectTemplateTests(unittest.TestCase):
         self.assertNotIn("{{project_name}}", overview)
         self.assertTrue((project_path / "assets/project-cover.svg").is_file())
 
+    def test_incomplete_template_drafts_are_rejected(self):
+        template = self.server.get_project_template("Project Overview.md")
+        missing_section = template["content"].replace(
+            "## Open Questions",
+            "### Open Questions",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing required H2 sections: Open Questions",
+        ):
+            self.server.save_project_template_draft(
+                "Project Overview.md",
+                missing_section,
+            )
+
+        missing_placeholder = template["content"].replace(
+            "{{next_actions}}",
+            "No actions were preserved.",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing required placeholders:.*next_actions",
+        ):
+            self.server.save_project_template_draft(
+                "Project Overview.md",
+                missing_placeholder,
+            )
+
+    def test_existing_incomplete_draft_is_reported_for_correction(self):
+        template = self.server.get_project_template("Project Overview.md")
+        drafts_path = Path(template["path"]).parent / ".drafts"
+        drafts_path.mkdir()
+        (drafts_path / "Project Overview.md").write_text(
+            "# {{project_name}}\n\n## Objective\n\nPretty but incomplete.\n",
+            encoding="utf-8",
+        )
+
+        result = self.server.get_project_template("Project Overview.md")
+
+        self.assertFalse(result["draft_valid"])
+        self.assertIn(
+            "missing required placeholders",
+            result["draft_validation_error"],
+        )
+
     def test_image_asset_is_validated_and_saved(self):
         project_path = self.vault / "Projects/Visual Project"
         project_path.mkdir()
