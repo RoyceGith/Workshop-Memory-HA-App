@@ -1,7 +1,10 @@
 from __future__ import annotations
+import base64
+import binascii
 import os
 import httpx
 import json
+from html import escape
 from uuid import uuid4
 from pathlib import Path
 import re
@@ -14,6 +17,34 @@ from mcp.server.fastmcp import FastMCP
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
+DEFAULT_PROJECT_TEMPLATES_PATH = PROJECT_ROOT / "templates" / "project"
+PROJECT_TEMPLATE_FILENAMES = (
+    "Project Overview.md",
+    "Requirements.md",
+    "Design Decisions.md",
+    "Session Handoff.md",
+    "Test Log.md",
+)
+PROJECT_TEMPLATE_FIELDS = {
+    "project_name",
+    "source_session",
+    "discussion",
+    "conclusions",
+    "decisions",
+    "useful_information",
+    "open_questions",
+    "next_actions",
+}
+PROJECT_TEMPLATE_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
+MAX_PROJECT_TEMPLATE_SIZE = 200_000
+MAX_PROJECT_IMAGE_SIZE = 8 * 1024 * 1024
+PROJECT_IMAGE_SIGNATURES = {
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".webp": (b"RIFF",),
+    ".gif": (b"GIF87a", b"GIF89a"),
+}
 
 mcp = FastMCP(
     "Workshop Memory MCP",
@@ -70,6 +101,167 @@ def load_settings() -> dict[str, Any]:
 
     settings["vault_path"] = str(vault_path)
     return settings
+
+
+def project_templates_path(create: bool = True) -> Path:
+    """Resolve and optionally initialize editable templates in the vault."""
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    configured_path = settings.get(
+        "project_templates_folder",
+        "Templates/Workshop Memory/Projects",
+    )
+    templates_path = (vault_path / configured_path).resolve()
+
+    if templates_path != vault_path and vault_path not in templates_path.parents:
+        raise ValueError("Project templates folder must be inside the vault.")
+
+    if not create:
+        return templates_path
+
+    templates_path.mkdir(parents=True, exist_ok=True)
+
+    for filename in PROJECT_TEMPLATE_FILENAMES:
+        source_path = DEFAULT_PROJECT_TEMPLATES_PATH / filename
+        target_path = templates_path / filename
+
+        if target_path.exists():
+            continue
+
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"Bundled project template was not found: {source_path}"
+            )
+
+        target_path.write_text(
+            source_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    return templates_path
+
+
+def resolve_project_template(template_name: str) -> Path:
+    """Resolve one of the supported project templates safely."""
+    clean_name = clean_single_line(template_name, "Template name")
+
+    if clean_name not in PROJECT_TEMPLATE_FILENAMES:
+        raise ValueError(
+            "Unknown project template. Expected one of: "
+            + ", ".join(PROJECT_TEMPLATE_FILENAMES)
+        )
+
+    return project_templates_path() / clean_name
+
+
+def validate_project_template(content: str) -> list[str]:
+    """Validate template size and return the placeholders it uses."""
+    if not content.strip():
+        raise ValueError("Project template content cannot be empty.")
+
+    if len(content.encode("utf-8")) > MAX_PROJECT_TEMPLATE_SIZE:
+        raise ValueError("Project template is larger than 200 KB.")
+
+    fields = sorted(set(PROJECT_TEMPLATE_PATTERN.findall(content)))
+    unknown_fields = sorted(set(fields) - PROJECT_TEMPLATE_FIELDS)
+
+    if unknown_fields:
+        raise ValueError(
+            "Unknown project template placeholders: "
+            + ", ".join(unknown_fields)
+        )
+
+    if "project_name" not in fields:
+        raise ValueError(
+            "Project template must include {{project_name}}."
+        )
+
+    return fields
+
+
+def render_project_template(
+    content: str,
+    values: dict[str, str],
+) -> str:
+    """Render a validated project template using known literal fields."""
+    validate_project_template(content)
+
+    def replace_field(match: re.Match[str]) -> str:
+        value = values.get(match.group(1), "Not documented")
+        line_start = content.rfind("\n", 0, match.start()) + 1
+
+        if content[line_start:match.start()] == "> ":
+            return value.replace("\n", "\n> ")
+
+        return value
+
+    return PROJECT_TEMPLATE_PATTERN.sub(replace_field, content).rstrip() + "\n"
+
+
+def create_project_cover(project_path: Path, project_name: str) -> str:
+    """Create a lightweight, local SVG cover for an Obsidian project."""
+    assets_path = project_path / "assets"
+    assets_path.mkdir()
+    cover_path = assets_path / "project-cover.svg"
+    display_name = project_name[:64]
+    title_font_size = min(
+        52,
+        max(18, int(780 / max(len(display_name) * 0.6, 1))),
+    )
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">{escape(display_name)} project cover</title>
+  <desc id="desc">Workshop Memory project dashboard cover</desc>
+  <rect width="1200" height="300" fill="#172126"/>
+  <rect x="0" y="0" width="18" height="300" fill="#20a39e"/>
+  <rect x="18" y="252" width="1182" height="48" fill="#ffba49"/>
+  <circle cx="1040" cy="92" r="64" fill="#ef5b5b"/>
+  <path d="M930 196h220M970 226h180" stroke="#d8e2dc" stroke-width="10" stroke-linecap="round"/>
+  <text x="72" y="112" fill="#9fd8d5" font-family="Arial, sans-serif" font-size="24">WORKSHOP MEMORY</text>
+  <text x="72" y="184" fill="#ffffff" font-family="Arial, sans-serif" font-size="{title_font_size}" font-weight="700">{escape(display_name)}</text>
+  <text x="72" y="278" fill="#172126" font-family="Arial, sans-serif" font-size="20" font-weight="700">PROJECT DASHBOARD</text>
+</svg>
+"""
+    cover_path.write_text(svg, encoding="utf-8", newline="\n")
+    return str(cover_path)
+
+
+def validate_project_image(filename: str, image_data: bytes) -> str:
+    """Validate a safe project image filename, size, and file signature."""
+    clean_filename = clean_single_line(filename, "Image filename")
+
+    if safe_filename_part(clean_filename) != clean_filename:
+        raise ValueError("Image filename contains unsafe characters.")
+
+    extension = Path(clean_filename).suffix.lower()
+
+    if extension not in PROJECT_IMAGE_SIGNATURES:
+        raise ValueError("Image must be PNG, JPEG, WebP, or GIF.")
+
+    if not image_data:
+        raise ValueError("Image content cannot be empty.")
+
+    if len(image_data) > MAX_PROJECT_IMAGE_SIZE:
+        raise ValueError("Project image is larger than 8 MB.")
+
+    if extension == ".webp":
+        valid_signature = (
+            image_data.startswith(b"RIFF")
+            and len(image_data) >= 12
+            and image_data[8:12] == b"WEBP"
+        )
+    else:
+        valid_signature = any(
+            image_data.startswith(signature)
+            for signature in PROJECT_IMAGE_SIGNATURES[extension]
+        )
+
+    if not valid_signature:
+        raise ValueError(
+            "Image content does not match its filename extension."
+        )
+
+    return clean_filename
 
 
 @mcp.tool()
@@ -1064,6 +1256,189 @@ def session_section(content: str, heading: str) -> str:
 
 
 @mcp.tool()
+def list_project_templates() -> dict[str, Any]:
+    """List editable project templates and their supported placeholders."""
+    templates_path = project_templates_path()
+    templates = []
+
+    for filename in PROJECT_TEMPLATE_FILENAMES:
+        template_path = templates_path / filename
+        content = template_path.read_text(encoding="utf-8")
+        templates.append(
+            {
+                "template_name": filename,
+                "path": str(template_path),
+                "placeholders": validate_project_template(content),
+                "draft_exists": (
+                    templates_path / ".drafts" / filename
+                ).is_file(),
+            }
+        )
+
+    return {
+        "templates_folder": str(templates_path),
+        "count": len(templates),
+        "templates": templates,
+        "supported_placeholders": sorted(PROJECT_TEMPLATE_FIELDS),
+    }
+
+
+@mcp.tool()
+def get_project_template(template_name: str) -> dict[str, Any]:
+    """Read one editable project template and any pending draft."""
+    template_path = resolve_project_template(template_name)
+    content = template_path.read_text(encoding="utf-8")
+    draft_path = template_path.parent / ".drafts" / template_path.name
+
+    return {
+        "template_name": template_path.name,
+        "path": str(template_path),
+        "content": content,
+        "placeholders": validate_project_template(content),
+        "draft_path": str(draft_path) if draft_path.is_file() else None,
+        "draft_content": (
+            draft_path.read_text(encoding="utf-8")
+            if draft_path.is_file()
+            else None
+        ),
+    }
+
+
+@mcp.tool()
+def save_project_template_draft(
+    template_name: str,
+    content: str,
+) -> dict[str, Any]:
+    """
+    Save a proposed project-template change for user review.
+
+    This never changes the active template. Use
+    apply_project_template_draft only after explicit user approval.
+    """
+    template_path = resolve_project_template(template_name)
+    placeholders = validate_project_template(content)
+    drafts_path = template_path.parent / ".drafts"
+    drafts_path.mkdir(exist_ok=True)
+    draft_path = drafts_path / template_path.name
+    draft_path.write_text(
+        content.rstrip() + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    return {
+        "status": "draft_saved",
+        "template_name": template_path.name,
+        "draft_path": str(draft_path),
+        "placeholders": placeholders,
+        "active_template_changed": False,
+        "approval_required": True,
+    }
+
+
+@mcp.tool()
+def apply_project_template_draft(
+    template_name: str,
+    approved: bool = False,
+) -> dict[str, Any]:
+    """
+    Apply an approved project-template draft and archive the old version.
+
+    Set approved=true only after the user explicitly approves the pending
+    draft. Existing projects are not modified.
+    """
+    if not approved:
+        raise PermissionError(
+            "Explicit user approval is required to apply a template draft."
+        )
+
+    template_path = resolve_project_template(template_name)
+    draft_path = template_path.parent / ".drafts" / template_path.name
+
+    if not draft_path.is_file():
+        raise FileNotFoundError(
+            f"No pending draft exists for: {template_path.name}"
+        )
+
+    draft_content = draft_path.read_text(encoding="utf-8")
+    placeholders = validate_project_template(draft_content)
+    archive_path = template_path.parent / ".archive"
+    archive_path.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup_path = archive_path / f"{timestamp}--{template_path.name}"
+    backup_path.write_text(
+        template_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    template_path.write_text(
+        draft_content.rstrip() + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    draft_path.unlink()
+
+    return {
+        "status": "applied",
+        "template_name": template_path.name,
+        "path": str(template_path),
+        "backup_path": str(backup_path),
+        "placeholders": placeholders,
+        "existing_projects_changed": False,
+    }
+
+
+@mcp.tool()
+def save_project_image_asset(
+    project: str,
+    filename: str,
+    image_base64: str,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """
+    Save a PNG, JPEG, WebP, or GIF image in a project's assets folder.
+
+    The image must be base64 encoded. Existing assets are protected unless
+    overwrite=true is explicitly requested by the user.
+    """
+    project_path = resolve_project_folder(project)
+
+    if len(image_base64) > (MAX_PROJECT_IMAGE_SIZE * 4 // 3) + 16:
+        raise ValueError("Encoded project image is larger than 8 MB.")
+
+    try:
+        image_data = base64.b64decode(image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Image content is not valid base64.") from exc
+
+    clean_filename = validate_project_image(filename, image_data)
+    assets_path = (project_path / "assets").resolve()
+    assets_path.mkdir(exist_ok=True)
+    image_path = (assets_path / clean_filename).resolve()
+
+    if image_path.parent != assets_path:
+        raise ValueError("Invalid image filename or path.")
+
+    if image_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Project image already exists: {clean_filename}"
+        )
+
+    image_path.write_bytes(image_data)
+
+    return {
+        "status": "saved",
+        "project": project_path.name,
+        "filename": clean_filename,
+        "path": str(image_path),
+        "size_bytes": len(image_data),
+        "overwritten": overwrite,
+        "obsidian_embed": f"![[assets/{clean_filename}]]",
+    }
+
+
+@mcp.tool()
 def create_project_from_general_session(
     project_name: str,
     session_filename: str,
@@ -1139,134 +1514,23 @@ def create_project_from_general_session(
         "Next Actions",
     )
 
+    template_values = {
+        "project_name": clean_project_name,
+        "source_session": source_path.name,
+        "discussion": discussion,
+        "conclusions": conclusions,
+        "decisions": decisions,
+        "useful_information": useful_information,
+        "open_questions": open_questions,
+        "next_actions": next_actions,
+    }
+    templates_path = project_templates_path()
     notes = {
-        "Project Overview.md": f"""# {clean_project_name}
-
-## Objective
-
-{conclusions}
-
-## Current Stage
-
-- Initial project creation / definition
-
-## Background
-
-{discussion}
-
-## Current Knowledge
-
-{useful_information}
-
-## Open Questions
-
-{open_questions}
-
-## Next Actions
-
-{next_actions}
-
-## Source Session
-
-- `{source_path.name}`
-
-## Review Status
-
-- **Reviewed by user:** No
-- **Accepted into project knowledge:** No
-""",
-        "Requirements.md": f"""# {clean_project_name} — Requirements
-
-## Project Goal
-
-{conclusions}
-
-## Initial Requirements
-
-{useful_information}
-
-## Open Requirements
-
-{open_questions}
-
-## Constraints
-
-- Not documented
-
-## Acceptance Criteria
-
-- To be defined and reviewed
-
-## Source Session
-
-- `{source_path.name}`
-
-## Review Status
-
-- **Reviewed by user:** No
-- **Accepted into project knowledge:** No
-""",
-        "Design Decisions.md": f"""# {clean_project_name} — Design Decisions
-
-## Proposed Decisions from Source Session
-
-{decisions}
-
-> These are proposals only. Convert accepted items into individual DD records
-> after review.
-
-## Review Status
-
-- **Reviewed by user:** No
-- **Accepted into project knowledge:** No
-""",
-        "Session Handoff.md": f"""# {clean_project_name} — Session Handoff
-
-## Current Project Stage
-
-- Initial project creation / definition
-
-## Current Working State
-
-The project was created from the approved general session:
-
-- `{source_path.name}`
-
-## Background
-
-{discussion}
-
-## Conclusions Reached
-
-{conclusions}
-
-## Open Questions
-
-{open_questions}
-
-## Next Actions
-
-{next_actions}
-
-## Review Status
-
-- **Reviewed by user:** No
-- **Accepted into project knowledge:** No
-""",
-        "Test Log.md": f"""# {clean_project_name} — Test Log
-
-## Current Test Status
-
-- No project tests documented yet.
-
-## Source Session
-
-- `{source_path.name}`
-
-## Review Status
-
-- **Reviewed by user:** No
-""",
+        filename: render_project_template(
+            (templates_path / filename).read_text(encoding="utf-8"),
+            template_values,
+        )
+        for filename in PROJECT_TEMPLATE_FILENAMES
     }
 
     project_path.mkdir()
@@ -1274,6 +1538,8 @@ The project was created from the approved general session:
     created_files: list[str] = []
 
     try:
+        cover_path = create_project_cover(project_path, clean_project_name)
+
         for filename, content in notes.items():
             output_path = project_path / filename
 
@@ -1306,6 +1572,8 @@ The project was created from the approved general session:
             "project": clean_project_name,
             "project_folder": str(project_path),
             "created_files": created_files,
+            "created_assets": [cover_path],
+            "templates_folder": str(templates_path),
             "source_session": source_path.name,
             "source_session_archived": archive_source_session,
             "archive_path": (
@@ -1323,6 +1591,15 @@ The project was created from the approved general session:
 
             if file_path.exists():
                 file_path.unlink()
+
+        assets_path = project_path / "assets"
+        cover_file = assets_path / "project-cover.svg"
+
+        if cover_file.exists():
+            cover_file.unlink()
+
+        if assets_path.exists() and not any(assets_path.iterdir()):
+            assets_path.rmdir()
 
         if project_path.exists() and not any(project_path.iterdir()):
             project_path.rmdir()

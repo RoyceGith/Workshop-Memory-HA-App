@@ -23,6 +23,7 @@ RUN python3 -m pip install \
 
 COPY src /app/src
 COPY config /app/config
+COPY templates /app/templates
 COPY run.sh /run.sh
 
 RUN chmod a+x /run.sh
