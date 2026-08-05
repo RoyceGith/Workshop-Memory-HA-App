@@ -2126,6 +2126,286 @@ def list_import_files() -> dict[str, Any]:
         "files": files,
     }
 
+def normalize_progress_fact(value: str) -> str:
+    """Normalize one progress fact for deterministic duplicate detection."""
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def clean_progress_items(items: list[str] | None) -> list[str]:
+    """Clean and deduplicate one incoming progress list while preserving order."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+
+    for item in items or []:
+        if not item or not item.strip():
+            continue
+
+        value = " ".join(item.strip().split())
+        normalized = normalize_progress_fact(value)
+
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        cleaned.append(value)
+
+    return cleaned
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace one UTF-8 text file in its existing directory."""
+    temporary_path = path.with_name(
+        f".{path.name}.{uuid4().hex}.tmp"
+    )
+
+    try:
+        temporary_path.write_text(
+            content,
+            encoding="utf-8",
+            newline="\n",
+        )
+        temporary_path.replace(path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+@mcp.tool()
+def save_project_progress(
+    project: str,
+    source: str,
+    progress_summary: list[str] | None = None,
+    work_completed: list[str] | None = None,
+    architecture_updates: list[str] | None = None,
+    deployment_updates: list[str] | None = None,
+    security_updates: list[str] | None = None,
+    requirements_updates: list[str] | None = None,
+    decisions_made: list[str] | None = None,
+    tests_completed: list[str] | None = None,
+    problems_resolved: list[str] | None = None,
+    current_status: list[str] | None = None,
+    open_questions: list[str] | None = None,
+    next_actions: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Compare structured project progress with current memory and merge new facts.
+
+    This is the normal project-memory write path. It does not create an
+    approval draft. Existing note history is preserved, duplicate facts are
+    skipped, backups are created, writes are atomic, and Session Handoff plus
+    Change Log are updated in the same transaction.
+    """
+    project_path = resolve_project_folder(project)
+    project_name = project_path.name
+    clean_source = clean_single_line(source, "Source")
+    now = datetime.now().astimezone()
+    timestamp = now.isoformat(timespec="seconds")
+    date_label = now.strftime("%Y-%m-%d")
+    checkpoint_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
+
+    incoming_sections: dict[str, list[str]] = {
+        "Progress Summary": clean_progress_items(progress_summary),
+        "Work Completed": clean_progress_items(work_completed),
+        "Architecture Updates": clean_progress_items(architecture_updates),
+        "Deployment Updates": clean_progress_items(deployment_updates),
+        "Security Updates": clean_progress_items(security_updates),
+        "Requirements Updates": clean_progress_items(requirements_updates),
+        "Decisions Made": clean_progress_items(decisions_made),
+        "Tests Completed": clean_progress_items(tests_completed),
+        "Problems Resolved": clean_progress_items(problems_resolved),
+        "Current Status": clean_progress_items(current_status),
+        "Open Questions": clean_progress_items(open_questions),
+        "Next Actions": clean_progress_items(next_actions),
+    }
+
+    if not any(incoming_sections.values()):
+        raise ValueError("At least one project-progress item is required.")
+
+    existing_note_paths = sorted(project_path.glob("*.md"))
+    existing_content = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in existing_note_paths
+        if path.is_file()
+    )
+    existing_normalized = normalize_progress_fact(existing_content)
+
+    added_by_section: dict[str, list[str]] = {}
+    ignored_duplicates: list[str] = []
+
+    for heading, items in incoming_sections.items():
+        added_items: list[str] = []
+
+        for item in items:
+            normalized = normalize_progress_fact(item)
+
+            if normalized and normalized in existing_normalized:
+                ignored_duplicates.append(item)
+                continue
+
+            added_items.append(item)
+            existing_normalized += " " + normalized
+
+        if added_items:
+            added_by_section[heading] = added_items
+
+    if not added_by_section:
+        return {
+            "status": "no_changes",
+            "project": project_name,
+            "checkpoint_id": checkpoint_id,
+            "updated_notes": [],
+            "added": [],
+            "ignored_duplicates": ignored_duplicates,
+            "backup_created": False,
+            "approval_required": False,
+        }
+
+    note_mapping: dict[str, list[str]] = {
+        "Project Overview.md": [
+            "Progress Summary",
+            "Work Completed",
+            "Current Status",
+            "Problems Resolved",
+        ],
+        "Architecture.md": ["Architecture Updates"],
+        "Deployment.md": ["Deployment Updates"],
+        "Security.md": ["Security Updates"],
+        "Requirements.md": ["Requirements Updates"],
+        "Design Decisions.md": ["Decisions Made"],
+        "Test Log.md": ["Tests Completed"],
+        "Session Handoff.md": [
+            "Progress Summary",
+            "Work Completed",
+            "Problems Resolved",
+            "Current Status",
+            "Open Questions",
+            "Next Actions",
+        ],
+    }
+
+    planned_updates: dict[Path, str] = {}
+
+    for filename, headings in note_mapping.items():
+        sections: list[str] = []
+
+        for heading in headings:
+            items = added_by_section.get(heading, [])
+
+            if not items:
+                continue
+
+            sections.append(
+                f"### {heading}\n\n"
+                + "\n".join(f"- {item}" for item in items)
+            )
+
+        if not sections:
+            continue
+
+        note_path = project_path / filename
+        marker = f"<!-- workshop-progress:{checkpoint_id} -->"
+        block = (
+            f"\n\n{marker}\n"
+            f"## Progress Checkpoint — {date_label}\n\n"
+            f"- **Saved:** {timestamp}\n"
+            f"- **Source:** {clean_source}\n"
+            f"- **Checkpoint ID:** {checkpoint_id}\n\n"
+            + "\n\n".join(sections)
+            + "\n"
+        )
+
+        if note_path.exists():
+            current = note_path.read_text(encoding="utf-8").rstrip()
+            planned_updates[note_path] = current + block + "\n"
+        else:
+            title = Path(filename).stem
+            planned_updates[note_path] = (
+                f"# {project_name} — {title}\n"
+                + block.lstrip()
+                + "\n"
+            )
+
+    change_log_path = project_path / "Change Log.md"
+    changed_note_names = sorted(path.name for path in planned_updates)
+    all_added = [
+        item
+        for items in added_by_section.values()
+        for item in items
+    ]
+    change_log_block = (
+        f"\n\n<!-- workshop-progress:{checkpoint_id} -->\n"
+        f"## {timestamp} — Project Progress Saved\n\n"
+        f"- **Source:** {clean_source}\n"
+        f"- **Checkpoint ID:** {checkpoint_id}\n"
+        f"- **Notes updated:** {', '.join(changed_note_names)}\n"
+        f"- **New facts:** {len(all_added)}\n"
+        f"- **Duplicates ignored:** {len(ignored_duplicates)}\n\n"
+        "### Added Facts\n\n"
+        + "\n".join(f"- {item}" for item in all_added)
+        + "\n"
+    )
+
+    if change_log_path.exists():
+        planned_updates[change_log_path] = (
+            change_log_path.read_text(encoding="utf-8").rstrip()
+            + change_log_block
+            + "\n"
+        )
+    else:
+        planned_updates[change_log_path] = (
+            f"# {project_name} — Change Log\n"
+            + change_log_block.lstrip()
+            + "\n"
+        )
+
+    backup_root = project_path / ".workshop-memory-backups" / checkpoint_id
+    backup_root.mkdir(parents=True, exist_ok=False)
+    original_files: dict[Path, str | None] = {}
+
+    try:
+        for target_path in planned_updates:
+            original_content = (
+                target_path.read_text(encoding="utf-8")
+                if target_path.exists()
+                else None
+            )
+            original_files[target_path] = original_content
+
+            if original_content is not None:
+                backup_path = backup_root / target_path.name
+                backup_path.write_text(
+                    original_content,
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+        for target_path, new_content in planned_updates.items():
+            atomic_write_text(target_path, new_content)
+
+        return {
+            "status": "saved",
+            "project": project_name,
+            "checkpoint_id": checkpoint_id,
+            "updated_notes": sorted(path.name for path in planned_updates),
+            "added": all_added,
+            "added_by_section": added_by_section,
+            "ignored_duplicates": ignored_duplicates,
+            "backup_created": True,
+            "backup_path": str(backup_root),
+            "write_method": "atomic_append_only",
+            "approval_required": False,
+        }
+
+    except Exception:
+        for target_path, original_content in original_files.items():
+            if original_content is None:
+                if target_path.exists():
+                    target_path.unlink()
+            else:
+                atomic_write_text(target_path, original_content)
+        raise
+
+
 @mcp.tool()
 def save_project_update_draft(
     project: str,
