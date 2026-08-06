@@ -2840,7 +2840,6 @@ def combine_update_sections(
     return "\n\n".join(collected)
 
 
-@mcp.tool()
 def apply_project_update_draft(
     project: str,
     draft_filename: str,
