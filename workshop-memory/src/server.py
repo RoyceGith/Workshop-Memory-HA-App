@@ -1066,7 +1066,6 @@ def next_available_session_path(
     )
 
 
-@mcp.tool()
 def save_session_draft(
     project: str,
     source: Literal[
