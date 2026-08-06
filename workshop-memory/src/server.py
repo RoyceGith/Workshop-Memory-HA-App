@@ -2405,7 +2405,6 @@ def save_project_progress(
         raise
 
 
-@mcp.tool()
 def save_project_update_draft(
     project: str,
     source: str,
