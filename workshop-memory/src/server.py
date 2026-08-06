@@ -2611,7 +2611,6 @@ def extract_numbered_handoff_section(
     return body or "Not documented"
 
 
-@mcp.tool()
 def save_project_update_draft_from_handoff(
     project: str,
     import_filename: str,
