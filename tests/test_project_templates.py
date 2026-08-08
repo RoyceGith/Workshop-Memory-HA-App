@@ -377,6 +377,59 @@ class ProjectTemplateTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.server.write_project_note("NOTES/existing.md", "second")
 
+    def test_project_progress_is_newest_first_and_uses_canonical_notes(self):
+        project_path = self.vault / "Projects/Ordered Progress"
+        project_path.mkdir()
+        for filename in (
+            "Project Overview.md",
+            "Session Handoff.md",
+            "Deployment and Operations.md",
+            "Security and Permissions.md",
+        ):
+            (project_path / filename).write_text(
+                f"# Ordered Progress — {Path(filename).stem}\n\n## Current\n\nStable.\n",
+                encoding="utf-8",
+            )
+
+        first = self.server.save_project_progress(
+            "Ordered Progress",
+            "First save",
+            progress_summary=["Older progress fact"],
+            deployment_updates=["Older deployment fact"],
+            security_updates=["Older security fact"],
+        )
+        second = self.server.save_project_progress(
+            "Ordered Progress",
+            "Second save",
+            progress_summary=["Newest progress fact"],
+            deployment_updates=["Newest deployment fact"],
+            security_updates=["Newest security fact"],
+        )
+
+        self.assertEqual(first["write_method"], "atomic_newest_first")
+        self.assertEqual(second["write_method"], "atomic_newest_first")
+        for filename, newest, older in (
+            ("Project Overview.md", "Newest progress fact", "Older progress fact"),
+            ("Session Handoff.md", "Newest progress fact", "Older progress fact"),
+            (
+                "Deployment and Operations.md",
+                "Newest deployment fact",
+                "Older deployment fact",
+            ),
+            (
+                "Security and Permissions.md",
+                "Newest security fact",
+                "Older security fact",
+            ),
+            ("Change Log.md", "Second save", "First save"),
+        ):
+            content = (project_path / filename).read_text(encoding="utf-8")
+            self.assertEqual(content.count(self.server.PROGRESS_FEED_MARKER), 1)
+            self.assertLess(content.index(newest), content.index(older))
+
+        self.assertFalse((project_path / "Deployment.md").exists())
+        self.assertFalse((project_path / "Security.md").exists())
+
     def test_read_tools_publish_annotations_and_note_write_does_not(self):
         for tool_name in (
             "check_server_status",
@@ -493,6 +546,46 @@ class ProjectTemplateTests(unittest.TestCase):
                 "update.md",
                 user_confirmed=True,
             )
+
+    def test_approved_project_updates_are_inserted_newest_first(self):
+        project_path = self.vault / "Projects/Ordered Updates"
+        project_path.mkdir()
+        deployment_path = project_path / "Deployment and Operations.md"
+        deployment_path.write_text(
+            "# Ordered Updates — Deployment and Operations\n\n"
+            "## Current\n\nStable.\n",
+            encoding="utf-8",
+        )
+
+        for filename, fact in (
+            ("first.md", "Older approved update"),
+            ("second.md", "Newest approved update"),
+        ):
+            (self.vault / "Sessions/Inbox" / filename).write_text(
+                "# Project Update\n\n"
+                "## Session Metadata\n\n"
+                "- **Session type:** Project Update\n"
+                "- **Project:** Ordered Updates\n"
+                "- **Review status:** Unreviewed\n"
+                "- **Applied to project:** No\n\n"
+                "## Deployment Updates\n\n"
+                f"- {fact}\n",
+                encoding="utf-8",
+            )
+            result = self.server.apply_project_update_draft(
+                "Ordered Updates",
+                filename,
+                user_confirmed=True,
+            )
+            self.assertEqual(result["update_method"], "newest-first")
+
+        content = deployment_path.read_text(encoding="utf-8")
+        self.assertEqual(content.count(self.server.PROGRESS_FEED_MARKER), 1)
+        self.assertLess(
+            content.index("Newest approved update"),
+            content.index("Older approved update"),
+        )
+        self.assertFalse((project_path / "Deployment.md").exists())
 
     def test_repository_code_tools_read_and_search_safe_files(self):
         source_path = self.code_repo / "workshop-memory/src/server.py"

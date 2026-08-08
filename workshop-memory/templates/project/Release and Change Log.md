@@ -13,6 +13,8 @@
 
 ## Release History
 
+> Newest release first. Insert each release directly below this line.
+
 ### Version/date — Title
 
 - **Changes:** Not documented

@@ -49,7 +49,7 @@
 
 ## Test History
 
-Append concise dated summaries. Preserve detailed logs or screenshots as linked assets rather than pasting them repeatedly.
+Newest test run first. Insert each dated summary directly below this line. Preserve detailed logs or screenshots as linked assets rather than pasting them repeatedly.
 
 ## Source Session
 

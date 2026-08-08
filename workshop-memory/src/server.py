@@ -281,6 +281,7 @@ CODE_SEARCH_BLOCKED_SUFFIXES = {
 MAX_CODE_FILE_READ_BYTES = 200_000
 MAX_CODE_SEARCH_RESULTS = 100
 MAX_CODE_LIST_RESULTS = 1_000
+PROGRESS_FEED_MARKER = "<!-- workshop-progress-feed:newest-first -->"
 
 mcp = FastMCP(
     "Workshop Memory MCP",
@@ -2768,6 +2769,50 @@ def atomic_write_text(path: Path, content: str) -> None:
             temporary_path.unlink()
 
 
+def insert_newest_first_progress(content: str, block: str) -> str:
+    """Insert one progress block above older blocks while preserving the note."""
+    clean_content = content.rstrip()
+    clean_block = block.strip()
+
+    if PROGRESS_FEED_MARKER in clean_content:
+        marker_end = clean_content.index(PROGRESS_FEED_MARKER) + len(
+            PROGRESS_FEED_MARKER
+        )
+        before = clean_content[:marker_end]
+        after = clean_content[marker_end:].lstrip()
+        return (
+            before
+            + "\n\n"
+            + clean_block
+            + ("\n\n" + after if after else "")
+            + "\n"
+        )
+
+    title_match = re.search(r"^#\s+.+$", clean_content, flags=re.MULTILINE)
+    if title_match:
+        insert_at = title_match.end()
+        before = clean_content[:insert_at]
+        after = clean_content[insert_at:].lstrip()
+        return (
+            before
+            + "\n\n"
+            + PROGRESS_FEED_MARKER
+            + "\n\n"
+            + clean_block
+            + ("\n\n" + after if after else "")
+            + "\n"
+        )
+
+    return (
+        PROGRESS_FEED_MARKER
+        + "\n\n"
+        + clean_block
+        + "\n\n"
+        + clean_content
+        + "\n"
+    )
+
+
 @mcp.tool()
 def save_project_progress(
     project: str,
@@ -2866,8 +2911,16 @@ def save_project_progress(
             "Problems Resolved",
         ],
         "Architecture.md": ["Architecture Updates"],
-        "Deployment.md": ["Deployment Updates"],
-        "Security.md": ["Security Updates"],
+        (
+            "Deployment and Operations.md"
+            if (project_path / "Deployment and Operations.md").exists()
+            else "Deployment.md"
+        ): ["Deployment Updates"],
+        (
+            "Security and Permissions.md"
+            if (project_path / "Security and Permissions.md").exists()
+            else "Security.md"
+        ): ["Security Updates"],
         "Requirements.md": ["Requirements Updates"],
         "Design Decisions.md": ["Decisions Made"],
         "Test Log.md": ["Tests Completed"],
@@ -2903,7 +2956,7 @@ def save_project_progress(
         note_path = project_path / filename
         marker = f"<!-- workshop-progress:{checkpoint_id} -->"
         block = (
-            f"\n\n{marker}\n"
+            f"{marker}\n"
             f"## Progress Checkpoint — {date_label}\n\n"
             f"- **Saved:** {timestamp}\n"
             f"- **Source:** {clean_source}\n"
@@ -2913,13 +2966,17 @@ def save_project_progress(
         )
 
         if note_path.exists():
-            current = note_path.read_text(encoding="utf-8").rstrip()
-            planned_updates[note_path] = current + block + "\n"
+            current = note_path.read_text(encoding="utf-8")
+            planned_updates[note_path] = insert_newest_first_progress(
+                current,
+                block,
+            )
         else:
             title = Path(filename).stem
             planned_updates[note_path] = (
-                f"# {project_name} — {title}\n"
-                + block.lstrip()
+                f"# {project_name} — {title}\n\n"
+                f"{PROGRESS_FEED_MARKER}\n\n"
+                + block.rstrip()
                 + "\n"
             )
 
@@ -2931,7 +2988,7 @@ def save_project_progress(
         for item in items
     ]
     change_log_block = (
-        f"\n\n<!-- workshop-progress:{checkpoint_id} -->\n"
+        f"<!-- workshop-progress:{checkpoint_id} -->\n"
         f"## {timestamp} — Project Progress Saved\n\n"
         f"- **Source:** {clean_source}\n"
         f"- **Checkpoint ID:** {checkpoint_id}\n"
@@ -2944,15 +3001,15 @@ def save_project_progress(
     )
 
     if change_log_path.exists():
-        planned_updates[change_log_path] = (
-            change_log_path.read_text(encoding="utf-8").rstrip()
-            + change_log_block
-            + "\n"
+        planned_updates[change_log_path] = insert_newest_first_progress(
+            change_log_path.read_text(encoding="utf-8"),
+            change_log_block,
         )
     else:
         planned_updates[change_log_path] = (
-            f"# {project_name} — Change Log\n"
-            + change_log_block.lstrip()
+            f"# {project_name} — Change Log\n\n"
+            f"{PROGRESS_FEED_MARKER}\n\n"
+            + change_log_block.rstrip()
             + "\n"
         )
 
@@ -2990,7 +3047,7 @@ def save_project_progress(
             "ignored_duplicates": ignored_duplicates,
             "backup_created": True,
             "backup_path": str(backup_root),
-            "write_method": "atomic_append_only",
+            "write_method": "atomic_newest_first",
             "approval_required": False,
         }
 
@@ -3448,9 +3505,9 @@ def apply_project_update_draft(
     """
     Apply an approved project-update draft to an existing project.
 
-    This tool appends dated update sections to project notes. It never replaces
-    existing note content. It requires explicit user confirmation and prevents
-    the same draft from being applied more than once.
+    This tool inserts dated update sections above older progress entries. It
+    preserves existing note content, requires explicit user confirmation, and
+    prevents the same draft from being applied more than once.
     """
     if not user_confirmed:
         raise PermissionError(
@@ -3590,7 +3647,7 @@ def apply_project_update_draft(
             return
 
         update_plan[filename] = (
-            f"\n\n{source_marker}\n"
+            f"{source_marker}\n"
             f"## Project Update — {update_date}\n\n"
             f"**Source draft:** `{draft_path.name}`  \n"
             f"**Applied:** {applied_timestamp}\n\n"
@@ -3611,13 +3668,21 @@ def apply_project_update_draft(
     )
 
     add_planned_update(
-        "Deployment.md",
+        (
+            "Deployment and Operations.md"
+            if (project_path / "Deployment and Operations.md").exists()
+            else "Deployment.md"
+        ),
         "Deployment Update",
         deployment_update,
     )
 
     add_planned_update(
-        "Security.md",
+        (
+            "Security and Permissions.md"
+            if (project_path / "Security and Permissions.md").exists()
+            else "Security.md"
+        ),
         "Security Update",
         security_update,
     )
@@ -3694,26 +3759,22 @@ def apply_project_update_draft(
                     encoding="utf-8"
                 )
 
-                new_content = (
-                    existing_content.rstrip()
-                    + appended_content
-                    + "\n"
+                new_content = insert_newest_first_progress(
+                    existing_content,
+                    appended_content,
                 )
             else:
                 note_title = Path(filename).stem
 
                 new_content = (
-                    f"# {clean_project_name} — {note_title}\n"
-                    f"{appended_content}\n"
+                    f"# {clean_project_name} — {note_title}\n\n"
+                    f"{PROGRESS_FEED_MARKER}\n\n"
+                    f"{appended_content.rstrip()}\n"
                 )
 
                 created_files.append(filename)
 
-            target_path.write_text(
-                new_content,
-                encoding="utf-8",
-                newline="\n",
-            )
+            atomic_write_text(target_path, new_content)
 
             changed_files.append(filename)
 
@@ -3733,7 +3794,7 @@ def apply_project_update_draft(
             "\n\n## Application Record\n\n"
             f"- **Applied:** {applied_timestamp}\n"
             f"- **Project:** {clean_project_name}\n"
-            "- **Method:** Append-only project update\n"
+            "- **Method:** Newest-first project update with preserved history\n"
             f"- **Files changed:** {len(changed_files)}\n"
         )
 
@@ -3767,7 +3828,7 @@ def apply_project_update_draft(
             "changed_files": changed_files,
             "created_files": created_files,
             "files_overwritten": False,
-            "update_method": "append-only",
+            "update_method": "newest-first",
             "duplicate_protection": True,
             "draft_marked_applied": True,
             "draft_archived": archive_after_apply,

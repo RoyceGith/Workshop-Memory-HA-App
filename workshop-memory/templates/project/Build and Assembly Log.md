@@ -20,6 +20,8 @@
 
 ## Build Entries
 
+> Newest build entry first. Insert each entry directly below this line.
+
 ### YYYY-MM-DD — Build step
 
 - **Work performed:** Not documented

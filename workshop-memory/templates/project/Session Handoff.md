@@ -38,7 +38,7 @@ Record only context needed to understand the current work. Link to Project Overv
 
 ## Recent Progress
 
-Keep only the latest meaningful milestones here. Move older detail to a dated progress/archive note when this section becomes long.
+Keep the newest milestone first. Move older detail to a dated progress/archive note when this section becomes long.
 
 | Date/version | Change | Verification state |
 |---|---|---|

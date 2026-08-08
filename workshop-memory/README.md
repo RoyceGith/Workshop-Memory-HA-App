@@ -116,6 +116,12 @@ in-place reorganization is a separate workflow:
 
 Changing a master template never rewrites an existing project automatically.
 
+Progress and history are newest-first. `save_project_progress` inserts each new
+checkpoint immediately below a stable progress-feed marker near the top of the
+note, so the latest update remains visible before older checkpoints. The same
+ordering applies to `Change Log.md`; existing history is preserved and backups
+remain transactional.
+
 ChatGPT can save PNG, JPEG, WebP, and GIF files of up to 8 MB with
 `save_project_image_asset`. The tool returns the corresponding Obsidian embed,
 for example `![[assets/architecture.png]]`.

@@ -32,6 +32,8 @@
 
 ## Calibration History
 
+> Newest calibration record first.
+
 - None recorded
 
 ## Review Status
