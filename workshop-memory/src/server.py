@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 
 
@@ -118,6 +119,7 @@ PROJECT_TEMPLATE_REQUIREMENTS = {
 }
 PROJECT_TEMPLATE_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 MAX_PROJECT_TEMPLATE_SIZE = 200_000
+MAX_GENERIC_PROJECT_NOTE_SIZE = 1_000_000
 MAX_PROJECT_IMAGE_SIZE = 8 * 1024 * 1024
 PROJECT_IMAGE_SIGNATURES = {
     ".png": (b"\x89PNG\r\n\x1a\n",),
@@ -180,6 +182,11 @@ mcp = FastMCP(
     port=3001,
     stateless_http=True,
     json_response=True,
+)
+
+READ_ONLY_TOOL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
 )
 
 
@@ -511,7 +518,7 @@ def validate_project_image(filename: str, image_data: bytes) -> str:
     return clean_filename
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def check_server_status() -> dict[str, Any]:
     """Check whether the server can load its settings and access the vault."""
     try:
@@ -554,7 +561,7 @@ def check_server_status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def list_repository_files(
     path_prefix: str = "",
     max_results: int = 500,
@@ -613,7 +620,7 @@ def list_repository_files(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def read_repository_file(
     relative_path: str,
     max_bytes: int = 100_000,
@@ -659,7 +666,7 @@ def read_repository_file(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def search_repository_code(
     query: str,
     path_prefix: str = "",
@@ -769,7 +776,7 @@ def search_repository_code(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_profile_summary() -> dict[str, Any]:
     """Return the compact user workflow and preferences summary."""
     settings = load_settings()
@@ -787,7 +794,7 @@ def get_profile_summary() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def list_projects() -> dict[str, Any]:
     """List available project folders in the Obsidian vault."""
     settings = load_settings()
@@ -842,7 +849,130 @@ def resolve_project_folder(project: str) -> Path:
     return project_path
 
 
+def projects_root_path() -> Path:
+    """Return the configured Projects root, constrained to the vault."""
+    settings = load_settings()
+    vault_path = Path(settings["vault_path"]).resolve()
+    projects_path = (vault_path / settings["projects_folder"]).resolve()
+    if projects_path != vault_path and vault_path not in projects_path.parents:
+        raise ValueError("Projects folder must stay inside the vault.")
+    if not projects_path.is_dir():
+        raise FileNotFoundError(f"Projects folder was not found: {projects_path}")
+    return projects_path
+
+
+def normalize_project_note_path(relative_path: str) -> str:
+    """Normalize one Markdown path beneath Projects without traversal."""
+    if not isinstance(relative_path, str):
+        raise ValueError("Project note path must be a string.")
+    normalized = relative_path.strip().replace("\\", "/").strip("/")
+    if not normalized:
+        raise ValueError("Project note path cannot be empty.")
+    candidate = Path(normalized)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError("Project note path must stay inside Projects.")
+    if any(not part or part.startswith(".") for part in candidate.parts):
+        raise ValueError("Hidden or empty project-note path parts are not allowed.")
+    if candidate.suffix.casefold() != ".md":
+        raise ValueError("Generic project notes must use the .md extension.")
+    return candidate.as_posix()
+
+
+def resolve_project_note_path(relative_path: str) -> Path:
+    """Resolve a generic project note safely beneath Projects."""
+    projects_path = projects_root_path()
+    normalized = normalize_project_note_path(relative_path)
+    note_path = (projects_path / normalized).resolve()
+    if projects_path not in note_path.parents:
+        raise ValueError("Resolved project note path is outside Projects.")
+    return note_path
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL)
+def read_project_note(relative_path: str) -> dict[str, Any]:
+    """Read any Markdown note by its path relative to the Projects folder."""
+    note_path = resolve_project_note_path(relative_path)
+    if not note_path.is_file():
+        raise FileNotFoundError(f"Project note was not found: {relative_path}")
+    return {
+        "status": "ok",
+        "relative_path": note_path.relative_to(projects_root_path()).as_posix(),
+        "path": str(note_path),
+        "content": note_path.read_text(encoding="utf-8"),
+    }
+
+
 @mcp.tool()
+def write_project_note(
+    relative_path: str,
+    content: str,
+    mode: Literal["create", "replace", "append"] = "create",
+    create_folders: bool = True,
+) -> dict[str, Any]:
+    """
+    Write one Markdown note beneath Projects and optionally create its folders.
+
+    Create refuses existing files. Replace archives the prior note. Append
+    preserves existing content. MCP clients should approval-gate this tool.
+    """
+    if not isinstance(content, str):
+        raise ValueError("Project note content must be text.")
+    if len(content.encode("utf-8")) > MAX_GENERIC_PROJECT_NOTE_SIZE:
+        raise ValueError("Project note is larger than 1 MB.")
+    note_path = resolve_project_note_path(relative_path)
+    projects_path = projects_root_path()
+    missing_folders: list[str] = []
+    current = note_path.parent
+    while current != projects_path and not current.exists():
+        missing_folders.append(current.relative_to(projects_path).as_posix())
+        current = current.parent
+    existed = note_path.exists()
+    if existed and not note_path.is_file():
+        raise IsADirectoryError(f"Project note path is not a file: {relative_path}")
+    if mode == "create" and existed:
+        raise FileExistsError(f"Project note already exists: {relative_path}")
+    if mode in {"replace", "append"} and not existed:
+        raise FileNotFoundError(f"Project note was not found: {relative_path}")
+    if missing_folders and not create_folders:
+        raise FileNotFoundError(
+            "Project note folder does not exist: " + missing_folders[-1]
+        )
+    if mode == "append":
+        existing = note_path.read_text(encoding="utf-8")
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        final_content = existing + separator + content
+    else:
+        final_content = content
+    if final_content and not final_content.endswith("\n"):
+        final_content += "\n"
+    if len(final_content.encode("utf-8")) > MAX_GENERIC_PROJECT_NOTE_SIZE:
+        raise ValueError("Final project note is larger than 1 MB.")
+
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path: Path | None = None
+    if mode == "replace":
+        archive_path = note_path.parent / ".archive"
+        archive_path.mkdir(exist_ok=True)
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = archive_path / f"{note_path.stem} {timestamp}.md"
+        backup_path.write_text(
+            note_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+    note_path.write_text(final_content, encoding="utf-8", newline="\n")
+
+    return {
+        "status": "created" if not existed else {"replace": "replaced", "append": "appended"}[mode],
+        "relative_path": note_path.relative_to(projects_path).as_posix(),
+        "path": str(note_path),
+        "created_folders": list(reversed(missing_folders)),
+        "size_bytes": len(final_content.encode("utf-8")),
+        "backup_path": str(backup_path) if backup_path else None,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_project_summary(project: str) -> dict[str, Any]:
     """Return the Project Overview note for a named project."""
     project_path = resolve_project_folder(project)
@@ -924,7 +1054,7 @@ def extract_open_decisions(content: str | None) -> list[dict[str, str]]:
     return decisions
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_project_context(
     project: str,
     include_requirements: bool = True,
@@ -1234,7 +1364,7 @@ Only tests actually performed or observations actually made should appear here.
         "review_required": True,
     }
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_latest_handoff(project: str) -> dict[str, Any]:
     """Return the current Session Handoff note for a named project."""
     project_path = resolve_project_folder(project)
@@ -1256,7 +1386,7 @@ def get_latest_handoff(project: str) -> dict[str, Any]:
         "content": handoff_path.read_text(encoding="utf-8"),
     }
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_open_decisions(project: str) -> dict[str, Any]:
     """Return unresolved Open or Proposed design decisions for a project."""
     project_path = resolve_project_folder(project)
@@ -1717,7 +1847,7 @@ def session_section(content: str, heading: str) -> str:
     return extracted or "Not documented"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def list_project_templates() -> dict[str, Any]:
     """List editable project templates and their supported placeholders."""
     templates_path = project_templates_path()
@@ -1754,7 +1884,7 @@ def list_project_templates() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def get_project_template(template_name: str) -> dict[str, Any]:
     """Read one editable project template and any pending draft."""
     template_path = resolve_project_template(template_name)
@@ -2096,7 +2226,7 @@ def create_project_from_general_session(
 
         raise
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def list_import_files() -> dict[str, Any]:
     """List TXT and Markdown files available in the vault Imports folder."""
     settings = load_settings()
@@ -3520,7 +3650,7 @@ def apply_server_change(
         ),
     }
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 def check_deploy_agent_status() -> dict[str, Any]:
     """Check the configured deploy agent health endpoint without mutating state."""
     agent_url = os.getenv(

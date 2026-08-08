@@ -101,3 +101,10 @@ are not changed when a master template changes.
 ChatGPT can save PNG, JPEG, WebP, and GIF files of up to 8 MB with
 `save_project_image_asset`. The tool returns the corresponding Obsidian embed,
 for example `![[assets/architecture.png]]`.
+
+Generic Markdown notes can be created anywhere beneath `Projects` with
+`write_project_note`. Missing folders can be created in the same operation,
+so `NOTES/HA OS Entities.md` is one write call. Create mode never overwrites;
+replace mode archives the previous note, and append mode preserves its content.
+Use `read_project_note` to verify a saved note. Read-only tools publish the MCP
+`readOnlyHint`, allowing clients to avoid unnecessary approval prompts.

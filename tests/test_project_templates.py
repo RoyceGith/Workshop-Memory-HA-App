@@ -15,10 +15,14 @@ SERVER_PATH = ROOT / "workshop-memory" / "src" / "server.py"
 
 class FakeFastMCP:
     def __init__(self, *args, **kwargs):
-        pass
+        self.tools = {}
 
-    def tool(self):
-        return lambda function: function
+    def tool(self, **kwargs):
+        def decorator(function):
+            self.tools[function.__name__] = kwargs
+            return function
+
+        return decorator
 
     def run(self, *args, **kwargs):
         raise AssertionError("The MCP server must not start during tests.")
@@ -29,15 +33,23 @@ def load_server_module():
     mcp_server_module = types.ModuleType("mcp.server")
     fastmcp_module = types.ModuleType("mcp.server.fastmcp")
     fastmcp_module.FastMCP = FakeFastMCP
+    mcp_types_module = types.ModuleType("mcp.types")
+
+    class ToolAnnotations:
+        def __init__(self, **kwargs):
+            self.values = kwargs
+
+    mcp_types_module.ToolAnnotations = ToolAnnotations
     httpx_module = types.ModuleType("httpx")
 
     original_modules = {
         name: sys.modules.get(name)
-        for name in ("mcp", "mcp.server", "mcp.server.fastmcp", "httpx")
+        for name in ("mcp", "mcp.server", "mcp.server.fastmcp", "mcp.types", "httpx")
     }
     sys.modules["mcp"] = mcp_module
     sys.modules["mcp.server"] = mcp_server_module
     sys.modules["mcp.server.fastmcp"] = fastmcp_module
+    sys.modules["mcp.types"] = mcp_types_module
     sys.modules["httpx"] = httpx_module
 
     try:
@@ -184,6 +196,67 @@ class ProjectTemplateTests(unittest.TestCase):
         self.assertNotIn("![[assets/project-cover.svg]]", overview)
         self.assertNotIn("{{project_name}}", overview)
         self.assertFalse((project_path / "assets").exists())
+
+    def test_generic_project_note_creates_folder_and_supports_safe_updates(self):
+        created = self.server.write_project_note(
+            "NOTES/HA OS Entities.md",
+            "# HA OS Entities\n\n- sensor.workshop_temperature",
+        )
+        note_path = self.vault / "Projects/NOTES/HA OS Entities.md"
+
+        self.assertEqual(created["status"], "created")
+        self.assertEqual(created["created_folders"], ["NOTES"])
+        self.assertTrue(note_path.is_file())
+        self.assertIn(
+            "sensor.workshop_temperature",
+            self.server.read_project_note("NOTES/HA OS Entities.md")["content"],
+        )
+
+        appended = self.server.write_project_note(
+            "NOTES/HA OS Entities.md",
+            "- light.workshop",
+            mode="append",
+        )
+        self.assertEqual(appended["status"], "appended")
+        self.assertIn("light.workshop", note_path.read_text(encoding="utf-8"))
+
+        replaced = self.server.write_project_note(
+            "NOTES/HA OS Entities.md",
+            "# Replacement",
+            mode="replace",
+        )
+        self.assertEqual(replaced["status"], "replaced")
+        self.assertTrue(Path(replaced["backup_path"]).is_file())
+
+    def test_generic_project_note_rejects_unsafe_paths_and_overwrite(self):
+        with self.assertRaisesRegex(ValueError, "stay inside Projects"):
+            self.server.write_project_note("../Outside.md", "unsafe")
+        with self.assertRaisesRegex(ValueError, "must use the .md extension"):
+            self.server.write_project_note("NOTES/entities.txt", "unsafe")
+        with self.assertRaises(FileNotFoundError):
+            self.server.write_project_note(
+                "MISSING/note.md",
+                "cannot append",
+                mode="append",
+            )
+        self.assertFalse((self.vault / "Projects/MISSING").exists())
+
+        self.server.write_project_note("NOTES/existing.md", "first")
+        with self.assertRaises(FileExistsError):
+            self.server.write_project_note("NOTES/existing.md", "second")
+
+    def test_read_tools_publish_annotations_and_note_write_does_not(self):
+        for tool_name in (
+            "check_server_status",
+            "list_projects",
+            "get_project_context",
+            "read_project_note",
+            "list_project_templates",
+        ):
+            annotations = self.server.mcp.tools[tool_name]["annotations"]
+            self.assertTrue(annotations.values["readOnlyHint"])
+
+        self.assertNotIn("annotations", self.server.mcp.tools["write_project_note"])
 
     def test_incomplete_template_drafts_are_rejected(self):
         template = self.server.get_project_template("Project Overview.md")
