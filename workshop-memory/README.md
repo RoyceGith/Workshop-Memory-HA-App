@@ -78,7 +78,7 @@ files, and `.env`-style files.
 
 ## Project templates
 
-On first use, the app copies its five project templates into the vault at:
+On first use, the app copies its editable project templates into the vault at:
 
 `Templates/Workshop Memory/Projects`
 
@@ -94,9 +94,27 @@ template versions are retained in the template folder's `.archive` directory.
 Draft validation also requires every original H2 section and source-data
 placeholder, preventing visual edits from dropping project information.
 
-New projects include an `assets/project-cover.svg` cover and can use Obsidian
-callouts, tables, Mermaid diagrams, and local embedded images. Existing projects
-are not changed when a master template changes.
+Every project starts with the five-note `core` pack. New and existing projects
+can also use the optional `hardware_mechatronics` or
+`software_infrastructure` pack. Use `list_project_template_packs` and
+`preview_project_template_pack` before applying a pack. Applying a pack creates
+only missing notes and never overwrites an existing file.
+
+New projects can select optional packs with `template_packs`. Existing projects
+use `apply_project_template_pack` after explicit approval. Templates can use
+Obsidian callouts, tables, Mermaid diagrams, and local embedded images.
+
+Use `list_project_notes` to inventory a project before reorganizing it. A safe
+in-place reorganization is a separate workflow:
+
+1. `stage_project_reorganization` stores complete proposed replacements without
+   changing accepted project notes and returns a compact approval summary.
+2. `apply_project_reorganization` requires explicit approval and the exact draft
+   SHA-256, refuses to apply if the draft or a source note changed after preview,
+   archives every original, and replaces the approved set with rollback on
+   failure.
+
+Changing a master template never rewrites an existing project automatically.
 
 ChatGPT can save PNG, JPEG, WebP, and GIF files of up to 8 MB with
 `save_project_image_asset`. The tool returns the corresponding Obsidian embed,

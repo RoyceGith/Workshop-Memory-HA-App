@@ -1,30 +1,55 @@
----
-type: test-log
-project: "{{project_name}}"
-reviewed: false
----
+# {{project_name}} — Test Log
 
-![[assets/project-cover.svg]]
-
-# {{project_name}} - Test Log
+> Verification evidence only. Planned features belong in Requirements; current continuation work belongs in Session Handoff.
 
 ## Current Test Status
 
-| Status | Passed | Failed | Blocked |
-| --- | ---: | ---: | ---: |
-| Not started | 0 | 0 | 0 |
+- **Overall status:** Testing has not started
+- **Latest tested version/build:** Not documented
+- **Latest tested environment:** Not documented
+- **Last test date:** Not documented
+- **Release recommendation:** Not assessed
 
-```mermaid
-flowchart LR
-    Plan[Plan test] --> Run[Run]
-    Run --> Record[Record evidence]
-    Record --> Decide{Pass?}
-    Decide -->|Yes| Verified[Verified]
-    Decide -->|No| Fix[Fix and retry]
-```
+## Test Environments
 
-> [!todo] First verification
-> Add the first test case, expected result, observed result, and evidence.
+| Environment ID | Hardware/runtime | Version/build | Configuration notes |
+|---|---|---|---|
+| ENV-001 | Not documented | Not documented | Not documented |
+
+## Acceptance and Regression Matrix
+
+| Test ID | Requirement/feature | Environment | Expected result | Latest result | Evidence |
+|---|---|---|---|---|---|
+| TEST-001 | To be defined | ENV-001 | To be defined | Not run | None |
+
+## Latest Test Run
+
+- **Date:** Not documented
+- **Version/build:** Not documented
+- **Tester:** Not documented
+- **Environment:** Not documented
+
+### Passed
+
+- None recorded
+
+### Failed
+
+- None recorded
+
+### Not Run or Blocked
+
+- None recorded
+
+## Known Failures and Retest Queue
+
+| Issue | First seen | Current status | Retest condition |
+|---|---|---|---|
+| None recorded | — | — | — |
+
+## Test History
+
+Append concise dated summaries. Preserve detailed logs or screenshots as linked assets rather than pasting them repeatedly.
 
 ## Source Session
 
@@ -33,3 +58,5 @@ flowchart LR
 ## Review Status
 
 - **Reviewed by user:** No
+- **Accepted as test evidence:** No
+- **Last organized:** Not yet reviewed

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import binascii
+import hashlib
 import os
 import httpx
 import json
@@ -19,12 +20,40 @@ from mcp.types import ToolAnnotations
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 DEFAULT_PROJECT_TEMPLATES_PATH = PROJECT_ROOT / "templates" / "project"
-PROJECT_TEMPLATE_FILENAMES = (
+CORE_PROJECT_TEMPLATE_FILENAMES = (
     "Project Overview.md",
     "Requirements.md",
     "Design Decisions.md",
     "Session Handoff.md",
     "Test Log.md",
+)
+PROJECT_TEMPLATE_PACKS = {
+    "core": CORE_PROJECT_TEMPLATE_FILENAMES,
+    "hardware_mechatronics": (
+        "Bill of Materials.md",
+        "Wiring and Pin Map.md",
+        "Mechanical Design.md",
+        "Firmware Architecture.md",
+        "Communication Protocol.md",
+        "Safety and Interlocks.md",
+        "Calibration Data.md",
+        "Build and Assembly Log.md",
+    ),
+    "software_infrastructure": (
+        "Architecture.md",
+        "API and Integrations.md",
+        "Data and Storage.md",
+        "Deployment and Operations.md",
+        "Security and Permissions.md",
+        "Release and Change Log.md",
+    ),
+}
+PROJECT_TEMPLATE_FILENAMES = tuple(
+    dict.fromkeys(
+        filename
+        for filenames in PROJECT_TEMPLATE_PACKS.values()
+        for filename in filenames
+    )
 )
 PROJECT_TEMPLATE_FIELDS = {
     "project_name",
@@ -117,6 +146,83 @@ PROJECT_TEMPLATE_REQUIREMENTS = {
         ),
     },
 }
+OPTIONAL_PROJECT_TEMPLATE_HEADINGS = {
+    "Bill of Materials.md": (
+        "Scope", "Selected Parts", "Candidate Parts", "Procurement",
+        "Compatibility Checks", "Cost Summary", "Review Status",
+    ),
+    "Wiring and Pin Map.md": (
+        "Electrical Architecture", "Power Rails", "Connection Table",
+        "Controller Pin Map", "Wire and Connector Specifications",
+        "Grounding and Noise Control", "Verification", "Review Status",
+    ),
+    "Mechanical Design.md": (
+        "Mechanical Objective", "Dimensions and Envelope", "Mechanisms",
+        "Materials and Processes", "CAD and Manufacturing Files",
+        "Tolerances and Serviceability", "Open Mechanical Questions",
+        "Review Status",
+    ),
+    "Firmware Architecture.md": (
+        "Firmware Scope", "Targets and Toolchains", "Module Map",
+        "State Machines and Data Flow", "Configuration and Persistence",
+        "Fault Handling and Recovery", "Source References", "Review Status",
+    ),
+    "Communication Protocol.md": (
+        "Protocol Scope", "Physical and Transport Layer", "Message Format",
+        "Commands and Events", "Validation and Error Handling",
+        "Timing and Recovery", "Examples", "Review Status",
+    ),
+    "Safety and Interlocks.md": (
+        "Safety Scope", "Hazards", "Interlocks", "Fault Responses",
+        "Emergency and Recovery Procedures", "Verification Checklist",
+        "Residual Risks", "Review Status",
+    ),
+    "Calibration Data.md": (
+        "Calibration Scope", "Equipment and References", "Parameters",
+        "Procedure", "Results", "Acceptance Limits", "Calibration History",
+        "Review Status",
+    ),
+    "Build and Assembly Log.md": (
+        "Current Build State", "Revision Identification", "Assembly Plan",
+        "Build Entries", "Rework and Deviations", "Inspection Checklist",
+        "Next Build Actions", "Review Status",
+    ),
+    "Architecture.md": (
+        "System Scope", "Component Map", "Runtime and Data Flow",
+        "External Dependencies", "Boundaries and Failure Modes",
+        "Architecture References", "Review Status",
+    ),
+    "API and Integrations.md": (
+        "Integration Scope", "External Systems", "Interfaces and Endpoints",
+        "Authentication and Permissions", "Contracts and Schemas",
+        "Failure Handling", "Integration Test Status", "Review Status",
+    ),
+    "Data and Storage.md": (
+        "Data Scope", "Sources of Truth", "Data Model", "Storage Locations",
+        "Retention and Backups", "Privacy and Sensitive Data",
+        "Migration and Recovery", "Review Status",
+    ),
+    "Deployment and Operations.md": (
+        "Deployment Scope", "Environments", "Installation and Updates",
+        "Configuration", "Health and Observability", "Backup and Rollback",
+        "Operational Runbook", "Review Status",
+    ),
+    "Security and Permissions.md": (
+        "Security Scope", "Trust Boundaries", "Identity and Authentication",
+        "Authorization and Approval", "Secrets and Sensitive Data",
+        "Threats and Mitigations", "Security Verification", "Review Status",
+    ),
+    "Release and Change Log.md": (
+        "Current Release", "Release Policy", "Release History",
+        "Pending Release", "Compatibility and Migration Notes",
+        "Rollback References", "Review Status",
+    ),
+}
+for _template_name, _headings in OPTIONAL_PROJECT_TEMPLATE_HEADINGS.items():
+    PROJECT_TEMPLATE_REQUIREMENTS[_template_name] = {
+        "headings": _headings,
+        "placeholders": ("project_name",),
+    }
 PROJECT_TEMPLATE_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 MAX_PROJECT_TEMPLATE_SIZE = 200_000
 MAX_GENERIC_PROJECT_NOTE_SIZE = 1_000_000
@@ -2017,6 +2123,363 @@ def apply_project_template_draft(
     }
 
 
+def normalize_template_pack(template_pack: str) -> str:
+    """Return one supported template-pack key."""
+    clean_pack = clean_single_line(template_pack, "Template pack")
+    if clean_pack not in PROJECT_TEMPLATE_PACKS:
+        raise ValueError(
+            "Unknown project template pack. Expected one of: "
+            + ", ".join(PROJECT_TEMPLATE_PACKS)
+        )
+    return clean_pack
+
+
+def selected_project_template_files(
+    template_packs: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """Resolve core plus explicitly selected optional template packs."""
+    selected_packs = ["core"]
+    for template_pack in template_packs or []:
+        clean_pack = normalize_template_pack(template_pack)
+        if clean_pack not in selected_packs:
+            selected_packs.append(clean_pack)
+
+    selected_files = list(
+        dict.fromkeys(
+            filename
+            for pack in selected_packs
+            for filename in PROJECT_TEMPLATE_PACKS[pack]
+        )
+    )
+    return selected_packs, selected_files
+
+
+def existing_project_template_values(project_name: str) -> dict[str, str]:
+    """Return honest placeholders for adding templates to an existing project."""
+    return {
+        "project_name": project_name,
+        "source_session": "Added to existing project from an approved template pack",
+        "discussion": "Not documented",
+        "conclusions": "Not documented",
+        "decisions": "Not documented",
+        "useful_information": "Not documented",
+        "open_questions": "Not documented",
+        "next_actions": "Not documented",
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL)
+def list_project_template_packs() -> dict[str, Any]:
+    """List core and optional project-note packs without changing projects."""
+    return {
+        "count": len(PROJECT_TEMPLATE_PACKS),
+        "packs": [
+            {
+                "pack": pack,
+                "required": pack == "core",
+                "templates": list(filenames),
+            }
+            for pack, filenames in PROJECT_TEMPLATE_PACKS.items()
+        ],
+        "application_policy": (
+            "Packs create missing notes only and never overwrite existing notes."
+        ),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL)
+def preview_project_template_pack(
+    project: str,
+    template_pack: str,
+) -> dict[str, Any]:
+    """Preview which notes one template pack would add to a project."""
+    project_path = resolve_project_folder(project)
+    clean_pack = normalize_template_pack(template_pack)
+    filenames = PROJECT_TEMPLATE_PACKS[clean_pack]
+    existing = [name for name in filenames if (project_path / name).exists()]
+    missing = [name for name in filenames if not (project_path / name).exists()]
+    return {
+        "status": "preview",
+        "project": project_path.name,
+        "template_pack": clean_pack,
+        "would_create": missing,
+        "would_skip_existing": existing,
+        "files_overwritten": False,
+        "approval_required_to_apply": True,
+    }
+
+
+@mcp.tool()
+def apply_project_template_pack(
+    project: str,
+    template_pack: str,
+    approved: bool = False,
+) -> dict[str, Any]:
+    """Add missing notes from an approved pack without overwriting files."""
+    if not approved:
+        raise PermissionError(
+            "Explicit user approval is required to apply a template pack."
+        )
+
+    project_path = resolve_project_folder(project)
+    clean_pack = normalize_template_pack(template_pack)
+    templates_path = project_templates_path()
+    values = existing_project_template_values(project_path.name)
+    created: list[str] = []
+    skipped: list[str] = []
+    planned: list[tuple[Path, str]] = []
+
+    for filename in PROJECT_TEMPLATE_PACKS[clean_pack]:
+        output_path = project_path / filename
+        if output_path.exists():
+            skipped.append(filename)
+            continue
+        content = render_project_template(
+            filename,
+            (templates_path / filename).read_text(encoding="utf-8"),
+            values,
+        )
+        planned.append((output_path, content))
+
+    try:
+        for output_path, content in planned:
+            with output_path.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+            created.append(output_path.name)
+    except Exception:
+        for filename in created:
+            created_path = project_path / filename
+            if created_path.is_file():
+                created_path.unlink()
+        raise
+
+    return {
+        "status": "applied",
+        "project": project_path.name,
+        "template_pack": clean_pack,
+        "created_files": created,
+        "skipped_existing_files": skipped,
+        "files_overwritten": False,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL)
+def list_project_notes(project: str) -> dict[str, Any]:
+    """List visible Markdown notes in one project without reading their bodies."""
+    project_path = resolve_project_folder(project)
+    notes = [
+        {
+            "filename": path.name,
+            "relative_path": path.relative_to(projects_root_path()).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "modified": datetime.fromtimestamp(
+                path.stat().st_mtime
+            ).astimezone().isoformat(timespec="seconds"),
+        }
+        for path in sorted(project_path.glob("*.md"), key=lambda item: item.name.casefold())
+        if path.is_file() and not path.name.startswith(".")
+    ]
+    return {
+        "project": project_path.name,
+        "count": len(notes),
+        "notes": notes,
+    }
+
+
+def normalize_reorganization_id(reorganization_id: str) -> str:
+    """Validate one opaque reorganization draft identifier."""
+    clean_id = clean_single_line(reorganization_id, "Reorganization ID")
+    if not re.fullmatch(r"[0-9a-f]{32}", clean_id):
+        raise ValueError("Invalid reorganization ID.")
+    return clean_id
+
+
+def normalize_reorganization_notes(
+    project_path: Path,
+    notes: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Validate complete replacement bodies for existing root project notes."""
+    if not isinstance(notes, dict) or not notes:
+        raise ValueError("At least one project note replacement is required.")
+    if len(notes) > 30:
+        raise ValueError("A reorganization may contain at most 30 notes.")
+
+    normalized: list[dict[str, Any]] = []
+    total_size = 0
+    for raw_filename, content in notes.items():
+        filename = clean_single_line(raw_filename, "Project note filename")
+        candidate = Path(filename)
+        if (
+            candidate.name != filename
+            or filename.startswith(".")
+            or candidate.suffix.casefold() != ".md"
+        ):
+            raise ValueError(
+                "Reorganization notes must be visible Markdown files in the project root."
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Replacement note cannot be empty: {filename}")
+        final_content = content.rstrip() + "\n"
+        size_bytes = len(final_content.encode("utf-8"))
+        if size_bytes > MAX_GENERIC_PROJECT_NOTE_SIZE:
+            raise ValueError(f"Replacement note is larger than 1 MB: {filename}")
+        total_size += size_bytes
+        note_path = project_path / filename
+        if not note_path.is_file():
+            raise FileNotFoundError(
+                f"Reorganization only replaces existing notes: {filename}"
+            )
+        original = note_path.read_text(encoding="utf-8")
+        normalized.append(
+            {
+                "filename": filename,
+                "content": final_content,
+                "original_sha256": hashlib.sha256(
+                    original.encode("utf-8")
+                ).hexdigest(),
+                "original_size_bytes": len(original.encode("utf-8")),
+                "replacement_size_bytes": size_bytes,
+            }
+        )
+
+    if total_size > 5 * MAX_GENERIC_PROJECT_NOTE_SIZE:
+        raise ValueError("Reorganization draft is larger than 5 MB.")
+    return normalized
+
+
+@mcp.tool()
+def stage_project_reorganization(
+    project: str,
+    notes: dict[str, str],
+    description: str,
+) -> dict[str, Any]:
+    """Stage full replacements for review without changing accepted notes."""
+    project_path = resolve_project_folder(project)
+    clean_description = clean_single_line(description, "Description")
+    normalized = normalize_reorganization_notes(project_path, notes)
+    reorganization_id = uuid4().hex
+    drafts_path = project_path / ".workshop-reorganization-drafts"
+    drafts_path.mkdir(exist_ok=True)
+    draft_path = drafts_path / f"{reorganization_id}.json"
+    payload = {
+        "schema_version": 1,
+        "reorganization_id": reorganization_id,
+        "project": project_path.name,
+        "description": clean_description,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "notes": normalized,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    draft_path.write_text(
+        serialized_payload,
+        encoding="utf-8",
+        newline="\n",
+    )
+    return {
+        "status": "staged",
+        "reorganization_id": reorganization_id,
+        "project": project_path.name,
+        "description": clean_description,
+        "draft_sha256": hashlib.sha256(
+            serialized_payload.encode("utf-8")
+        ).hexdigest(),
+        "notes": [
+            {
+                "filename": item["filename"],
+                "original_size_bytes": item["original_size_bytes"],
+                "replacement_size_bytes": item["replacement_size_bytes"],
+            }
+            for item in normalized
+        ],
+        "accepted_notes_changed": False,
+        "approval_required": True,
+    }
+
+
+@mcp.tool()
+def apply_project_reorganization(
+    project: str,
+    reorganization_id: str,
+    expected_draft_sha256: str,
+    approved: bool = False,
+) -> dict[str, Any]:
+    """Apply an approved, unchanged reorganization draft with rollback."""
+    if not approved:
+        raise PermissionError(
+            "Explicit user approval is required to reorganize project notes."
+        )
+    project_path = resolve_project_folder(project)
+    clean_id = normalize_reorganization_id(reorganization_id)
+    draft_path = (
+        project_path / ".workshop-reorganization-drafts" / f"{clean_id}.json"
+    )
+    if not draft_path.is_file():
+        raise FileNotFoundError(f"Reorganization draft was not found: {clean_id}")
+    serialized_payload = draft_path.read_text(encoding="utf-8")
+    clean_expected_hash = clean_single_line(
+        expected_draft_sha256, "Expected draft SHA-256"
+    ).casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", clean_expected_hash):
+        raise ValueError("Expected draft SHA-256 is invalid.")
+    actual_draft_hash = hashlib.sha256(
+        serialized_payload.encode("utf-8")
+    ).hexdigest()
+    if actual_draft_hash != clean_expected_hash:
+        raise RuntimeError(
+            "Reorganization draft changed after preview; stage it again."
+        )
+    payload = json.loads(serialized_payload)
+    if payload.get("project") != project_path.name:
+        raise ValueError("Reorganization draft belongs to a different project.")
+
+    validated: list[tuple[Path, str, str]] = []
+    for item in payload.get("notes", []):
+        filename = clean_single_line(item.get("filename", ""), "Project note filename")
+        note_path = project_path / filename
+        if note_path.parent != project_path or not note_path.is_file():
+            raise FileNotFoundError(f"Project note changed or disappeared: {filename}")
+        original = note_path.read_text(encoding="utf-8")
+        current_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()
+        if current_hash != item.get("original_sha256"):
+            raise RuntimeError(
+                f"Project note changed after preview; stage it again: {filename}"
+            )
+        replacement = item.get("content")
+        if not isinstance(replacement, str) or not replacement.strip():
+            raise ValueError(f"Draft replacement is invalid: {filename}")
+        validated.append((note_path, original, replacement.rstrip() + "\n"))
+
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    archive_path = project_path / ".archive" / "reorganizations" / timestamp
+    archive_path.mkdir(parents=True)
+    for note_path, original, _replacement in validated:
+        (archive_path / note_path.name).write_text(
+            original, encoding="utf-8", newline="\n"
+        )
+
+    changed_paths: list[Path] = []
+    try:
+        for note_path, _original, replacement in validated:
+            atomic_write_text(note_path, replacement)
+            changed_paths.append(note_path)
+    except Exception:
+        for note_path, original, _replacement in validated:
+            if note_path in changed_paths:
+                atomic_write_text(note_path, original)
+        raise
+
+    draft_path.unlink()
+    return {
+        "status": "applied",
+        "reorganization_id": clean_id,
+        "project": project_path.name,
+        "description": payload.get("description"),
+        "updated_files": [path.name for path, _old, _new in validated],
+        "backup_folder": str(archive_path),
+        "rollback_performed": False,
+    }
+
+
 @mcp.tool()
 def save_project_image_asset(
     project: str,
@@ -2071,12 +2534,14 @@ def create_project_from_general_session(
     project_name: str,
     session_filename: str,
     archive_source_session: bool = True,
+    template_packs: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Create a new project from an approved general session.
 
-    Creates a new project folder and standard notes. Refuses to overwrite an
-    existing project. Optionally archives the source session after success.
+    Creates a new project folder with core notes and explicitly selected
+    optional packs. Refuses to overwrite an existing project. Optionally
+    archives the source session after success.
     """
     settings = load_settings()
     vault_path = Path(settings["vault_path"]).resolve()
@@ -2153,6 +2618,9 @@ def create_project_from_general_session(
         "next_actions": next_actions,
     }
     templates_path = project_templates_path()
+    selected_packs, selected_files = selected_project_template_files(
+        template_packs
+    )
     notes = {
         filename: render_project_template(
             filename,
@@ -2161,7 +2629,7 @@ def create_project_from_general_session(
             .replace("![[assets/project-cover.svg]]\n\n", ""),
             template_values,
         )
-        for filename in PROJECT_TEMPLATE_FILENAMES
+        for filename in selected_files
     }
 
     project_path.mkdir()
@@ -2203,6 +2671,7 @@ def create_project_from_general_session(
             "created_files": created_files,
             "created_assets": [],
             "templates_folder": str(templates_path),
+            "template_packs": selected_packs,
             "source_session": source_path.name,
             "source_session_archived": archive_source_session,
             "archive_path": (

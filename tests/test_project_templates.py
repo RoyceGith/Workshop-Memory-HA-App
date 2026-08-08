@@ -122,12 +122,12 @@ class ProjectTemplateTests(unittest.TestCase):
 
     def test_templates_are_seeded_and_drafts_require_approval(self):
         result = self.server.list_project_templates()
-        self.assertEqual(result["count"], 5)
+        self.assertEqual(result["count"], 19)
 
         template = self.server.get_project_template("Project Overview.md")
         changed = template["content"].replace(
-            "Project objective",
-            "Approved project objective",
+            "Executive snapshot only",
+            "Approved executive snapshot",
         )
         draft = self.server.save_project_template_draft(
             "Project Overview.md",
@@ -197,6 +197,138 @@ class ProjectTemplateTests(unittest.TestCase):
         self.assertNotIn("{{project_name}}", overview)
         self.assertFalse((project_path / "assets").exists())
 
+    def test_project_creation_can_include_optional_template_pack(self):
+        session_path = self.vault / "Sessions/Inbox/hardware.md"
+        session_path.write_text(
+            """# General Session
+
+## Session Metadata
+
+- **Session type:** General
+
+## Discussion Summary
+
+- Build a motor controller.
+""",
+            encoding="utf-8",
+        )
+
+        result = self.server.create_project_from_general_session(
+            "Hardware Project",
+            "hardware.md",
+            archive_source_session=False,
+            template_packs=["hardware_mechatronics"],
+        )
+        project_path = Path(result["project_folder"])
+
+        self.assertEqual(
+            result["template_packs"],
+            ["core", "hardware_mechatronics"],
+        )
+        self.assertTrue((project_path / "Bill of Materials.md").is_file())
+        self.assertTrue((project_path / "Wiring and Pin Map.md").is_file())
+        self.assertFalse((project_path / "Architecture.md").exists())
+
+    def test_template_pack_preview_and_apply_never_overwrite(self):
+        project_path = self.vault / "Projects/Existing Hardware"
+        project_path.mkdir()
+        existing_bom = project_path / "Bill of Materials.md"
+        existing_bom.write_text("# Existing BOM\n", encoding="utf-8")
+
+        preview = self.server.preview_project_template_pack(
+            "Existing Hardware",
+            "hardware_mechatronics",
+        )
+        self.assertIn("Wiring and Pin Map.md", preview["would_create"])
+        self.assertEqual(
+            preview["would_skip_existing"],
+            ["Bill of Materials.md"],
+        )
+
+        with self.assertRaises(PermissionError):
+            self.server.apply_project_template_pack(
+                "Existing Hardware",
+                "hardware_mechatronics",
+            )
+
+        applied = self.server.apply_project_template_pack(
+            "Existing Hardware",
+            "hardware_mechatronics",
+            approved=True,
+        )
+        self.assertEqual(existing_bom.read_text(encoding="utf-8"), "# Existing BOM\n")
+        self.assertIn("Wiring and Pin Map.md", applied["created_files"])
+        self.assertEqual(applied["skipped_existing_files"], ["Bill of Materials.md"])
+
+    def test_reorganization_requires_approval_backs_up_and_rejects_stale_notes(self):
+        project_path = self.vault / "Projects/Mixed Project"
+        project_path.mkdir()
+        overview_path = project_path / "Project Overview.md"
+        overview_path.write_text("# Mixed\n\nOld mixed content.\n", encoding="utf-8")
+
+        staged = self.server.stage_project_reorganization(
+            "Mixed Project",
+            {"Project Overview.md": "# Mixed\n\nOrganized content."},
+            "Separate current state from history",
+        )
+        self.assertFalse(staged["accepted_notes_changed"])
+        self.assertIn("Old mixed content", overview_path.read_text(encoding="utf-8"))
+
+        with self.assertRaises(PermissionError):
+            self.server.apply_project_reorganization(
+                "Mixed Project",
+                staged["reorganization_id"],
+                staged["draft_sha256"],
+            )
+
+        applied = self.server.apply_project_reorganization(
+            "Mixed Project",
+            staged["reorganization_id"],
+            staged["draft_sha256"],
+            approved=True,
+        )
+        self.assertIn("Organized content", overview_path.read_text(encoding="utf-8"))
+        backup_path = Path(applied["backup_folder"]) / "Project Overview.md"
+        self.assertIn("Old mixed content", backup_path.read_text(encoding="utf-8"))
+
+        tampered = self.server.stage_project_reorganization(
+            "Mixed Project",
+            {"Project Overview.md": "# Mixed\n\nTamper target."},
+            "Tamper check",
+        )
+        tampered_path = (
+            project_path
+            / ".workshop-reorganization-drafts"
+            / f"{tampered['reorganization_id']}.json"
+        )
+        tampered_path.write_text(
+            tampered_path.read_text(encoding="utf-8").replace(
+                "Tamper target", "Changed draft"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "draft changed after preview"):
+            self.server.apply_project_reorganization(
+                "Mixed Project",
+                tampered["reorganization_id"],
+                tampered["draft_sha256"],
+                approved=True,
+            )
+
+        stale = self.server.stage_project_reorganization(
+            "Mixed Project",
+            {"Project Overview.md": "# Mixed\n\nSecond organization."},
+            "Second pass",
+        )
+        overview_path.write_text("# Mixed\n\nConcurrent edit.\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "changed after preview"):
+            self.server.apply_project_reorganization(
+                "Mixed Project",
+                stale["reorganization_id"],
+                stale["draft_sha256"],
+                approved=True,
+            )
+
     def test_generic_project_note_creates_folder_and_supports_safe_updates(self):
         created = self.server.write_project_note(
             "NOTES/HA OS Entities.md",
@@ -252,6 +384,9 @@ class ProjectTemplateTests(unittest.TestCase):
             "get_project_context",
             "read_project_note",
             "list_project_templates",
+            "list_project_template_packs",
+            "preview_project_template_pack",
+            "list_project_notes",
         ):
             annotations = self.server.mcp.tools[tool_name]["annotations"]
             self.assertTrue(annotations.values["readOnlyHint"])

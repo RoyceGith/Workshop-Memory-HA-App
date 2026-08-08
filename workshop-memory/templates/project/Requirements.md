@@ -1,15 +1,6 @@
----
-type: project-requirements
-project: "{{project_name}}"
-reviewed: false
----
+# {{project_name}} — Requirements
 
-![[assets/project-cover.svg]]
-
-# {{project_name}} - Requirements
-
-> [!abstract] Requirements dashboard
-> Use this page to separate known needs, unanswered needs, constraints, and acceptance checks.
+> Requirements only. Do not store implementation history, test results, or session summaries here.
 
 ## Project Goal
 
@@ -17,25 +8,76 @@ reviewed: false
 
 ## Initial Requirements
 
-> [!info] Captured requirements
-> {{useful_information}}
+### Imported Candidate Requirements
+
+{{useful_information}}
+
+Sort imported candidates during review. Do not treat them as accepted solely because they were imported.
+
+### Functional Requirements
+
+- Not documented
+
+### User Experience Requirements
+
+- Not documented
+
+### Integration and Data Requirements
+
+- Not documented
+
+### Reliability and Recovery Requirements
+
+- Not documented
+
+### Security, Privacy, and Approval Requirements
+
+- Not documented
+
+### Safety Requirements
+
+- Not documented
+
+### Deployment and Compatibility Requirements
+
+- Not documented
 
 ## Open Requirements
 
-> [!question] Needs clarification
-> {{open_questions}}
+{{open_questions}}
 
 ## Constraints
 
-| Area | Constraint | Confirmed |
-| --- | --- | --- |
-| General | Not documented | No |
+### Technical
+
+- Not documented
+
+### Hardware and Environment
+
+- Not documented
+
+### Operational
+
+- Not documented
+
+### Compatibility
+
+- Not documented
 
 ## Acceptance Criteria
 
-- [ ] Criteria defined
-- [ ] Criteria reviewed
-- [ ] Verification method agreed
+| ID | Requirement | Verification method | Status |
+|---|---|---|---|
+| AC-001 | To be defined | To be defined | Proposed |
+
+## Requirement Status Legend
+
+- **Proposed:** Not yet accepted.
+- **Accepted:** Approved as part of the project scope.
+- **Implemented:** Present in source or configuration.
+- **Verified:** Tested with recorded evidence.
+- **Deferred:** Intentionally postponed.
+- **Superseded:** Replaced; retain a pointer to the replacement.
 
 ## Source Session
 
@@ -45,3 +87,4 @@ reviewed: false
 
 - **Reviewed by user:** No
 - **Accepted into project knowledge:** No
+- **Last organized:** Not yet reviewed
